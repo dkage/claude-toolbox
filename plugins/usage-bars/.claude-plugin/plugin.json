@@ -1,0 +1,7 @@
+{
+  "name": "usage-bars",
+  "version": "0.1.0",
+  "description": "Always-visible context, 5-hour and weekly usage bars above the prompt, with the active model on the right.",
+  "author": { "name": "Danilo Cunha" },
+  "types": "./types/index.d.ts"
+}
