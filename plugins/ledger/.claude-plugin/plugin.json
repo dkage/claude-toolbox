@@ -1,0 +1,6 @@
+{
+  "name": "ledger",
+  "version": "0.1.0",
+  "description": "A numbered side-panel ledger of decisions, bugs, gaps and smells found during a session.",
+  "types": "./types/index.d.ts"
+}

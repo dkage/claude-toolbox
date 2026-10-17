@@ -1,12 +1,19 @@
 {
   "name": "claude-toolbox",
   "description": "Personal Claude Code plugins: mods and skills.",
-  "owner": { "name": "Danilo Cunha" },
+  "owner": {
+    "name": "Danilo Cunha"
+  },
   "plugins": [
     {
       "name": "usage-bars",
       "description": "Always-visible context, 5-hour and weekly usage bars above the prompt, with the active model on the right.",
       "source": "./plugins/usage-bars"
+    },
+    {
+      "name": "ledger",
+      "description": "A numbered side-panel ledger of decisions, bugs, gaps and smells found during a session; refer to items as \"13 (ledger)\".",
+      "source": "./plugins/ledger"
     }
   ]
 }

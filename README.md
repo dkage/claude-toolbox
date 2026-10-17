@@ -8,6 +8,7 @@ plugin, listed in `.claude-plugin/marketplace.json`.
 | Plugin | What it does |
 | --- | --- |
 | `usage-bars` | A band above the prompt: context bar, 5h and weekly usage bars with reset countdowns, a `compact soon` hint from 90% context, and the active model on the right. Drops pieces as the terminal narrows. |
+| `ledger` | A side panel that numbers the decisions, bugs, gaps and smells Claude finds during a session, ticks them off as they are decided and retires the ones that stop mattering. Write `13 (ledger)` in a prompt to point at item 13. `/ledger` reopens the panel. |
 
 ## Install
 
@@ -29,6 +30,7 @@ To run a plugin straight from a clone, without installing:
 
 ```
 claude --plugin-dir plugins/usage-bars
+claude --plugin-dir plugins/ledger
 ```
 
 ## Develop
@@ -36,4 +38,5 @@ claude --plugin-dir plugins/usage-bars
 ```
 claude plugin validate .
 claude plugin test plugins/usage-bars
+claude plugin test plugins/ledger
 ```
