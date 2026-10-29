@@ -17,6 +17,18 @@ const KINDS: { kind: LedgerKind; title: string }[] = [
 ]
 const STATUSES: LedgerStatus[] = ['open', 'in-progress', 'resolved', 'obsolete']
 
+/** One item of a batch "add": "ref" names it for "under" in later entries of the same batch. */
+type NewItem = {
+  ref?: string
+  under?: string
+  parent?: number
+  kind?: LedgerKind
+  title?: string
+  detail?: string
+  where?: string
+  url?: string
+}
+
 type Input = {
   action: 'add' | 'start' | 'resolve' | 'obsolete' | 'reopen' | 'move' | 'edit' | 'note' | 'list' | 'brief'
   kind?: LedgerKind
@@ -30,6 +42,7 @@ type Input = {
   note?: string
   path?: string
   briefing?: string
+  items?: NewItem[]
 }
 
 const lastNote = (i: LedgerItem) => i.notes?.[i.notes.length - 1]
@@ -42,6 +55,7 @@ const describe = (i: LedgerItem) => {
 
 const RULES = `The ledger is a numbered list the person keeps in a side panel of open decisions, bugs, gaps and code smells found during this session. Use the ${TOOL} tool:
 - add: when you find a confirmed bug, a spec or documentation gap, a code smell worth tracking, or a decision the person must make that you cannot settle yourself. Log it as soon as you find it, with a short title and, when known, "where" (file:line), "detail" (for a decision, the options) and "url" (an issue or page it tracks; the panel makes the title a link). Give "parent" (an item number) to nest it under another item, as an issue under its epic. Do not log trivia or things you will simply do as part of the task.
+- add with "items" (instead of one item's fields) logs several at once, as when mapping a roadmap: each entry takes the same fields plus "ref" (a name for it) and "under" (the ref of an earlier entry to nest under) or "parent" (an existing number). All are logged or none.
 - start: when you begin working on an item; it shows as in progress until resolved.
 - note: append a dated line of progress to an item ("note"): what was done, what is left, where you stopped. Prefer notes over rewriting the title, so the next session can pick up the item.
 - edit: fix an item's "title", "kind", "detail", "where" or "url" without changing its number; an empty string clears detail, where or url.
@@ -312,6 +326,65 @@ async function absolute($: EngineInterface, path: string) {
   return path.startsWith('/') ? path : `${await $.session.cwd()}/${path}`
 }
 
+/** Logs a batch in order, all or nothing; "under" refers to an earlier entry's "ref". */
+async function addMany($: EngineInterface, list: LedgerItem[], batch: NewItem[]) {
+  if (!Array.isArray(batch) || batch.length === 0) {
+    return { deny: 'add with "items" needs at least one entry.' }
+  }
+  const base = list.reduce((max, i) => Math.max(max, i.id), 0)
+  const refs = new Map<string, number>()
+  const made: LedgerItem[] = []
+  for (const [n, entry] of batch.entries()) {
+    const kind = KINDS.find(k => k.kind === entry.kind)?.kind
+    if (!kind || !entry.title) {
+      return { deny: `items[${n}] needs "kind" and "title".` }
+    }
+    let parent: number | undefined
+    if (entry.under !== undefined) {
+      parent = refs.get(entry.under)
+      if (parent === undefined) {
+        return { deny: `items[${n}].under "${entry.under}" names no earlier entry.` }
+      }
+    } else if (entry.parent) {
+      if (!list.some(i => i.id === entry.parent)) {
+        return { deny: `items[${n}].parent: no ledger item ${entry.parent}.` }
+      }
+      parent = entry.parent
+    }
+    const id = base + n + 1
+    if (entry.ref !== undefined) {
+      if (refs.has(entry.ref)) {
+        return { deny: `items[${n}].ref "${entry.ref}" is used twice.` }
+      }
+      refs.set(entry.ref, id)
+    }
+    made.push({
+      id,
+      kind,
+      title: entry.title,
+      detail: entry.detail,
+      where: entry.where,
+      url: entry.url,
+      parent,
+      status: 'open',
+    })
+  }
+  let shift = 0
+  await update($, items, (current: LedgerItem[]) => {
+    // Numbers taken since the list was read move the batch along with its own parents.
+    shift = current.reduce((max, i) => Math.max(max, i.id), 0) - base
+    const moved = (id?: number) => (id !== undefined && id > base ? id + shift : id)
+
+    return [...current, ...made.map(i => ({ ...i, id: i.id + shift, parent: moved(i.parent) }))]
+  })
+  await save($)
+  await refresh($)
+
+  return {
+    result: `Logged ${made.length} items:\n${made.map(i => `${i.id + shift} (ledger) ${i.title}${i.parent ? `, under ${i.parent > base ? i.parent + shift : i.parent}` : ''}`).join('\n')}`,
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.tool.register({
@@ -337,6 +410,24 @@ export const register: Register = on => {
           note: { type: 'string', description: 'A line of progress to append, dated (note).' },
           path: { type: 'string', description: 'The export file the briefing belongs to (brief).' },
           briefing: { type: 'string', description: 'The session briefing, in Markdown (brief).' },
+          items: {
+            type: 'array',
+            description: 'Several items to log at once (add), in order; nest with "under" or "parent".',
+            items: {
+              type: 'object',
+              properties: {
+                ref: { type: 'string', description: 'A name for this entry, for "under" in later entries.' },
+                under: { type: 'string', description: 'The ref of an earlier entry in this batch to nest under.' },
+                parent: { type: 'integer', description: 'An existing item number to nest under.' },
+                kind: { type: 'string', enum: ['decision', 'bug', 'gap', 'smell'] },
+                title: { type: 'string' },
+                detail: { type: 'string' },
+                where: { type: 'string' },
+                url: { type: 'string' },
+              },
+              required: ['kind', 'title'],
+            },
+          },
         },
         required: ['action'],
       },
@@ -489,6 +580,10 @@ export const register: Register = on => {
     const parent = input.parent ? list.find(i => i.id === input.parent) : undefined
     if (input.parent && !parent) {
       return { deny: `No ledger item ${input.parent} to nest under.` }
+    }
+
+    if (input.action === 'add' && input.items) {
+      return addMany($, list, input.items)
     }
 
     if (input.action === 'add') {

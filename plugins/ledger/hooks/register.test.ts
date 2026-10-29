@@ -395,3 +395,36 @@ test('an unknown action is refused and changes nothing', async ($, on) => {
   expect(String(odd.deny)).toContain('Unknown action')
   expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toBe('1 [gap] Safe')
 })
+
+test('a batch logs a whole tree in one call, or nothing', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Existing' })
+
+  const bad = await $.tool.call({
+    tool: TOOL,
+    action: 'add',
+    items: [
+      { ref: 'i', kind: 'gap', title: 'Initiative' },
+      { kind: 'gap', title: 'Orphan', under: 'nope' },
+    ],
+  })
+  expect(String(bad.deny)).toContain('items[1].under "nope"')
+  expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toBe('1 [gap] Existing')
+
+  const ok = await $.tool.call({
+    tool: TOOL,
+    action: 'add',
+    items: [
+      { ref: 'i', kind: 'gap', title: 'Initiative', parent: 1 },
+      { ref: 'e', kind: 'gap', title: 'Epic', under: 'i' },
+      { kind: 'bug', title: 'Issue', under: 'e', url: 'https://example.com/3' },
+    ],
+  })
+  expect(String(ok.result)).toBe(
+    'Logged 3 items:\n2 (ledger) Initiative, under 1\n3 (ledger) Epic, under 2\n4 (ledger) Issue, under 3',
+  )
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Issue/ }))?.text).toMatch(/└─ ☐ .*4\. Issue \[bug\]$/)
+  await ui.unmount()
+})
