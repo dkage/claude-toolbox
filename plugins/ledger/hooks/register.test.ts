@@ -169,8 +169,8 @@ test('an item links its url, else the first URL in its detail', async ($, on) =>
   })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Link', text: /With url/ }))?.props.href).toBe('https://example.com/1')
-  expect((await ui.find({ type: 'Link', text: /From detail/ }))?.props.href).toBe('https://example.com/2')
+  expect((await ui.find({ type: 'Link', text: /1\.$/ }))?.props.href).toBe('https://example.com/1')
+  expect((await ui.find({ type: 'Link', text: /2\.$/ }))?.props.href).toBe('https://example.com/2')
   await ui.unmount()
 })
 
@@ -324,28 +324,18 @@ test('a row is cut to one line and its card holds the whole item', async ($, on)
   }
 })
 
-/** The `top` of a row's hover card: the second child of the row's keyed Box. */
-async function cardTopOf(ui: { find: (q: { key: string }) => Promise<{ children: unknown[] } | undefined> }, id: number) {
-  const row = await ui.find({ key: `item-${id}` })
-
-  return (row?.children[1] as { props: { top: number } } | undefined)?.props.top
-}
-
-test('a card opens below its row when it fits, else above it', async ($, on) => {
+test('only the number is a link, and the card opens in the flow', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  for (const title of ['one', 'two', 'three', 'four', 'five', 'six']) {
-    await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title })
-  }
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Linked', url: 'https://example.com/9' })
 
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 8 } } })
-  // Gaps heading on line 0, items 1 to 6 on lines 1 to 6; each card is 4 lines tall.
-  expect(await cardTopOf(ui, 1)).toBe(1)
-  expect(await cardTopOf(ui, 6)).toBe(-4)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const link = await ui.find({ type: 'Link', text: /1\.$/ })
+  expect(link?.props.href).toBe('https://example.com/9')
+  expect((await ui.find({ type: 'Link', text: /Linked/ }))).toBeUndefined()
+  const row = await ui.find({ key: 'item-1' })
+  const card = row?.children[1] as { props: Record<string, unknown> } | undefined
+  expect(card?.props.display).toBe('none')
+  expect(card?.props.position).toBeUndefined()
   await ui.unmount()
-
-  const short = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 5 } } })
-  // Room neither below nor above row 2: the card starts at the pane's top.
-  expect(await cardTopOf(short, 2)).toBe(-2)
-  await short.unmount()
 })

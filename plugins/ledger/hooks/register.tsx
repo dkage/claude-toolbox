@@ -65,29 +65,6 @@ function parentOf(i: LedgerItem, byId: Map<number, LedgerItem>): LedgerItem | un
 
 type Row = { item: LedgerItem; depth: number; guide: string }
 
-/** The lines of an item's hover card, as drawn inside its border. */
-const cardLines = (i: LedgerItem, link: string | undefined) =>
-  [
-    `${i.id}. ${i.title}`,
-    `${i.kind}, ${i.status}${i.parent ? `, under ${i.parent}` : ''}`,
-    i.where,
-    i.detail,
-    link,
-    i.outcome ? `→ ${i.outcome}` : undefined,
-  ].filter((l): l is string => !!l)
-
-/**
- * Where a row's card goes, as its `top` from the row: below the row when it
- * fits, else above it, else against the pane's top edge.
- */
-function cardTop(row: number, height: number, bodyRows: number) {
-  if (row + 1 + height <= bodyRows) {
-    return 1
-  }
-
-  return height <= row ? -height : -row
-}
-
 /**
  * The ledger as drawn: top-level items grouped by kind, each followed by its
  * children (whatever their kind), open before closed within every group.
@@ -571,51 +548,34 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Link, Text } = $.ui.resolve(e)
-    const width = e.props.bodyColumns
-    const { offset, bodyRows } = e.props.scroll
     const list: LedgerItem[] = await read($, items)
 
     if (list.length === 0) {
       return <Text dimColor>Ledger is empty.</Text>
     }
 
-    // The pane line each group starts on: its heading, its rows, then a blank line.
-    const groups = sections(list)
-    const starts = groups.map((_, g) => groups.slice(0, g).reduce((sum, p) => sum + p.rows.length + 2, 0))
-
     return (
       <Box flexDirection="column">
-        {groups.map(({ kind, title, rows }, g) => (
+        {sections(list).map(({ kind, title, rows }) => (
           <Box flexDirection="column">
             <Text bold>{title}</Text>
-            {rows.map(({ item: i, depth, guide }, n) => {
+            {rows.map(({ item: i, depth, guide }) => {
               const link = linkOf(i)
-              const row = (starts[g] ?? 0) + 1 + n - offset
-              const lines = cardLines(i, link)
-              const height = 2 + lines.reduce((sum, l) => sum + Math.max(1, Math.ceil(l.length / Math.max(1, width - 2))), 0)
 
-              // One line per item, cut to the pane; the whole item shows in a card while hovered.
+              // One line per item, cut to the pane. Hovering it opens the whole item right
+              // beneath, pushing the rows below down. Only the number is a link, so the
+              // title stays plain text the pointer can hover.
               return (
                 <Box key={`item-${i.id}`} flexDirection="column">
                   <Text dimColor={!isOpen(i)} wrap="truncate-end">
                     {guide}
-                    {isOpen(i) ? '☐' : i.status === 'resolved' ? '✓' : '–'} {i.id}.{' '}
-                    {link ? <Link href={link}>{i.title}</Link> : i.title}
+                    {isOpen(i) ? '☐' : i.status === 'resolved' ? '✓' : '–'}{' '}
+                    {link ? <Link href={link}>{`${i.id}.`}</Link> : `${i.id}.`} {i.title}
                     {depth > 0 && i.kind !== kind ? ` [${i.kind}]` : ''}
                     {i.status === 'obsolete' ? ' (obsolete)' : ''}
                     {i.outcome && !isOpen(i) ? ` → ${i.outcome}` : ''}
                   </Text>
-                  <Box
-                    position="absolute"
-                    top={cardTop(row, height, bodyRows)}
-                    left={0}
-                    width={width}
-                    display="none"
-                    hover={{ display: 'flex' }}
-                    flexDirection="column"
-                    borderStyle="round"
-                    backgroundColor="black"
-                  >
+                  <Box display="none" hover={{ display: 'flex' }} flexDirection="column" borderStyle="round">
                     <Text bold>
                       {i.id}. {i.title}
                     </Text>
