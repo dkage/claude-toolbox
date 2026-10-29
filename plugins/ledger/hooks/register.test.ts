@@ -147,6 +147,8 @@ test('children sit under their parent, done ones at the bottom of that subtree',
       '☐ 5. Loose',
     ])
     expect((await ui.find({ key: 'fold-2' }))?.props.label).toBe('▾')
+    // A long title truncates; it never squeezes a nested parent's guide and arrow apart.
+    expect((await ui.find({ key: 'lead-2' }))?.props.flexShrink).toBe(0)
     await ui.unmount()
   }
 })

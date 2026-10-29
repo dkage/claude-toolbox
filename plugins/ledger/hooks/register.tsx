@@ -904,7 +904,8 @@ export const register: Register = on => {
                 <Box key={`item-${i.id}`} flexDirection="column">
                   <Box flexDirection="row">
                     {kids > 0 ? (
-                      <>
+                      // Kept whole: shrunk by the long title, guide and arrow wrap onto lines of their own.
+                      <Box key={`lead-${i.id}`} flexDirection="row" flexShrink={0}>
                         {guide ? <Text dimColor={!isOpen(i)}>{guide}</Text> : null}
                         <Button
                           key={`fold-${i.id}`}
@@ -916,7 +917,7 @@ export const register: Register = on => {
                             )
                           }
                         />
-                      </>
+                      </Box>
                     ) : null}
                   <Text dimColor={!isOpen(i)} wrap="truncate-end">
                     {kids > 0 ? ' ' : guide}
