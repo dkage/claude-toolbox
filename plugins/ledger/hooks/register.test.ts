@@ -123,13 +123,15 @@ test('children sit under their parent, done ones at the bottom of that subtree',
     for (const title of ['Initiative', 'Epic A', 'Issue open', 'Issue done', 'Loose']) {
       rows.push((await ui.find({ type: 'Text', text: new RegExp(title) }))?.text)
     }
+    // A parent's guide and fold button sit before its text.
     expect(rows).toEqual([
-      '☐ 1. Initiative',
-      '└─ ☐ 2. Epic A',
+      ' ☐ 1. Initiative (0/1)',
+      ' ☐ 2. Epic A (1/2)',
       '   ├─ ☐ 4. Issue open [bug]',
       '   └─ ✓ 3. Issue done → shipped',
       '☐ 5. Loose',
     ])
+    expect((await ui.find({ key: 'fold-2' }))?.props.label).toBe('▾')
     await ui.unmount()
   }
 })
@@ -427,4 +429,55 @@ test('a batch logs a whole tree in one call, or nothing', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /Issue/ }))?.text).toMatch(/└─ ☐ .*4\. Issue \[bug\]$/)
   await ui.unmount()
+})
+
+test('folding a parent hides its subtree and says how much', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: TOOL,
+    action: 'add',
+    items: [
+      { ref: 'e', kind: 'gap', title: 'Epic' },
+      { ref: 'a', kind: 'gap', title: 'Child', under: 'e' },
+      { kind: 'gap', title: 'Grandchild', under: 'a' },
+    ],
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'fold-1' })
+    expect((await ui.find({ type: 'Text', text: /Epic/ }))?.text).toBe(' ☐ 1. Epic (0/1) +2 folded')
+    expect(await ui.find({ type: 'Text', text: /Child/ })).toBeUndefined()
+    expect((await ui.find({ key: 'fold-1' }))?.props.label).toBe('▸')
+    await ui.press({ key: 'fold-1' })
+    expect((await ui.find({ type: 'Text', text: /Grandchild/ }))?.text).toContain('3. Grandchild')
+    await ui.unmount()
+  }
+})
+
+test('finished items hide, but a finished parent of open work stays', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: TOOL,
+    action: 'add',
+    items: [
+      { ref: 'e', kind: 'gap', title: 'Done epic' },
+      { kind: 'gap', title: 'Open child', under: 'e' },
+      { kind: 'gap', title: 'Done alone' },
+    ],
+  })
+  await $.tool.call({ tool: TOOL, action: 'resolve', id: 1 })
+  await $.tool.call({ tool: TOOL, action: 'resolve', id: 3 })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'toggle-done' })
+  expect(await ui.find({ type: 'Text', text: /Done alone/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Done epic/ })).toBeDefined()
+  expect((await ui.find({ key: 'toggle-done' }))?.props.label).toBe('show 1 finished')
+  await ui.unmount()
+
+  const shown = await $.command.run(run('ledger', 'done'))
+  expect(String(shown.text)).toBe('Finished ledger items are shown.')
 })

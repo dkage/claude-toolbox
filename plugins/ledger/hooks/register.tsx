@@ -8,6 +8,8 @@ const TOOL = 'mcp__ledger__ledger'
 const FORMAT = 'ledger/1'
 const SAVES_KEPT = 30
 const items = atom({ plugin: 'ledger', key: 'items' } as const, [])
+const folded = atom({ plugin: 'ledger', key: 'folded' } as const, [])
+const hideDone = atom({ plugin: 'ledger', key: 'hideDone' } as const, false)
 
 const KINDS: { kind: LedgerKind; title: string }[] = [
   { kind: 'decision', title: 'Decisions' },
@@ -94,13 +96,27 @@ function parentOf(i: LedgerItem, byId: Map<number, LedgerItem>): LedgerItem | un
   return parent
 }
 
-type Row = { item: LedgerItem; depth: number; guide: string }
+/**
+ * A drawn item: its depth and tree guide, its children's progress (finished of
+ * all, obsolete ones left out), and how many items beneath it a fold hides.
+ */
+type Row = {
+  item: LedgerItem
+  depth: number
+  guide: string
+  kids: number
+  progress?: { done: number; total: number }
+  hidden: number
+}
+
+/** What the pane leaves out: folded parents' subtrees, and finished items when asked. */
+type View = { folded?: readonly number[]; hideDone?: boolean }
 
 /**
  * The ledger as drawn: top-level items grouped by kind, each followed by its
  * children (whatever their kind), open before closed within every group.
  */
-function sections(list: LedgerItem[]): { kind: LedgerKind; title: string; rows: Row[] }[] {
+function sections(list: LedgerItem[], view: View = {}): { kind: LedgerKind; title: string; rows: Row[] }[] {
   const byId = new Map(list.map(i => [i.id, i]))
   const children = new Map<number, LedgerItem[]>()
   const roots: LedgerItem[] = []
@@ -112,11 +128,21 @@ function sections(list: LedgerItem[]): { kind: LedgerKind; title: string; rows: 
       roots.push(i)
     }
   }
+  const below = (id: number): LedgerItem[] =>
+    (children.get(id) ?? []).flatMap(kid => [kid, ...below(kid.id)])
+  // A finished item stays while anything beneath it is unfinished.
+  const shown = (i: LedgerItem) => !view.hideDone || isOpen(i) || below(i.id).some(isOpen)
   const walk = (item: LedgerItem, depth: number, guide: string, lead: string): Row[] => {
-    const kids = openFirst(children.get(item.id) ?? [])
+    const all = children.get(item.id) ?? []
+    const counted = all.filter(k => k.status !== 'obsolete')
+    const progress = counted.length
+      ? { done: counted.filter(k => k.status === 'resolved').length, total: counted.length }
+      : undefined
+    const isFolded = view.folded?.includes(item.id) ?? false
+    const kids = isFolded ? [] : openFirst(all.filter(shown))
 
     return [
-      { item, depth, guide },
+      { item, depth, guide, kids: all.length, progress, hidden: isFolded ? below(item.id).length : 0 },
       ...kids.flatMap((kid, n) => {
         const isLast = n === kids.length - 1
 
@@ -128,7 +154,7 @@ function sections(list: LedgerItem[]): { kind: LedgerKind; title: string; rows: 
   return KINDS.map(({ kind, title }) => ({
     kind,
     title,
-    rows: openFirst(roots.filter(i => i.kind === kind)).flatMap(i => walk(i, 0, '', '')),
+    rows: openFirst(roots.filter(i => i.kind === kind && shown(i))).flatMap(i => walk(i, 0, '', '')),
   })).filter(s => s.rows.length > 0)
 }
 
@@ -195,13 +221,13 @@ function markdown(data: LedgerExport): string {
   ]
   for (const { title, kind, rows } of sections(data.items)) {
     lines.push('', `## ${title}`, '')
-    for (const { item: i, depth } of rows) {
+    for (const { item: i, depth, progress } of rows) {
       const pad = '  '.repeat(depth)
       const link = linkOf(i)
       const name = link ? `[${i.title}](${link})` : i.title
       const tag = depth > 0 && i.kind !== kind ? ` [${i.kind}]` : ''
       lines.push(
-        `${pad}- [${isOpen(i) ? ' ' : 'x'}] ${i.id}. ${name}${tag}${i.status === 'in-progress' ? ' (in progress)' : ''}${i.status === 'obsolete' ? ' (obsolete)' : ''}${i.where ? ` (\`${i.where}\`)` : ''}`,
+        `${pad}- [${isOpen(i) ? ' ' : 'x'}] ${i.id}. ${name}${progress ? ` (${progress.done}/${progress.total})` : ''}${tag}${i.status === 'in-progress' ? ' (in progress)' : ''}${i.status === 'obsolete' ? ' (obsolete)' : ''}${i.where ? ` (\`${i.where}\`)` : ''}`,
       )
       if (i.detail) {
         lines.push(`${pad}  - ${i.detail}`)
@@ -432,7 +458,11 @@ export const register: Register = on => {
         required: ['action'],
       },
     })
-    await $.command.register({ name: 'ledger', description: 'Open the ledger panel' })
+    await $.command.register({
+      name: 'ledger',
+      description: 'Open the ledger panel; "done" shows or hides finished items',
+      argumentHint: '[done]',
+    })
     await $.command.register({
       name: 'ledger-export',
       description: 'Export the ledger, with a session briefing, to JSON and Markdown',
@@ -461,8 +491,13 @@ export const register: Register = on => {
     return next(e)
   }).catch((_$, e, next) => next(e))
 
-  on('command.run', { command: 'ledger' }, async $ => {
+  on('command.run', { command: 'ledger' }, async ($, e) => {
     await $.ui.open({ id: PANE, title: 'Ledger' })
+    if (e.args.trim() === 'done') {
+      const hidden = await update($, hideDone, (v: boolean) => !v)
+
+      return { text: hidden ? 'Finished ledger items are hidden.' : 'Finished ledger items are shown.' }
+    }
 
     return { text: 'Ledger panel opened.' }
   })
@@ -716,34 +751,67 @@ export const register: Register = on => {
   }).catch((_$, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Link, Text } = $.ui.resolve(e)
+    const { Box, Button, Link, Text } = $.ui.resolve(e)
     const list: LedgerItem[] = await read($, items)
+    const view = { folded: (await read($, folded)) as number[], hideDone: (await read($, hideDone)) as boolean }
 
     if (list.length === 0) {
       return <Text dimColor>Ledger is empty.</Text>
     }
+    const groups = sections(list, view)
+    const drawn = groups.reduce((sum, g) => sum + g.rows.length + g.rows.reduce((h, r) => h + r.hidden, 0), 0)
+    const finished = list.filter(i => !isOpen(i)).length
 
     return (
       <Box flexDirection="column">
-        {sections(list).map(({ kind, title, rows }) => (
+        {finished > 0 ? (
+          <Button
+            key="toggle-done"
+            plain
+            dimColor
+            label={view.hideDone ? `show ${list.length - drawn} finished` : 'hide finished'}
+            onPress={() => void update($, hideDone, (v: boolean) => !v)}
+          />
+        ) : null}
+        {groups.map(({ kind, title, rows }) => (
           <Box flexDirection="column">
             <Text bold>{title}</Text>
-            {rows.map(({ item: i, depth, guide }) => {
+            {rows.map(({ item: i, depth, guide, kids, progress, hidden }) => {
               const link = linkOf(i)
+              const isFolded = hidden > 0 || view.folded.includes(i.id)
 
               // One line per item, cut to the pane. Hovering it opens the whole item right
               // beneath, pushing the rows below down. Only the number is a link, so the
               // title stays plain text the pointer can hover.
               return (
                 <Box key={`item-${i.id}`} flexDirection="column">
+                  <Box flexDirection="row">
+                    {kids > 0 ? (
+                      <>
+                        {guide ? <Text dimColor={!isOpen(i)}>{guide}</Text> : null}
+                        <Button
+                          key={`fold-${i.id}`}
+                          plain
+                          label={isFolded ? '▸' : '▾'}
+                          onPress={() =>
+                            void update($, folded, (ids: number[]) =>
+                              ids.includes(i.id) ? ids.filter(id => id !== i.id) : [...ids, i.id],
+                            )
+                          }
+                        />
+                      </>
+                    ) : null}
                   <Text dimColor={!isOpen(i)} wrap="truncate-end">
-                    {guide}
+                    {kids > 0 ? ' ' : guide}
                     {GLYPHS[i.status]}{' '}
                     {link ? <Link href={link}>{`${i.id}.`}</Link> : `${i.id}.`} {i.title}
+                    {progress ? ` (${progress.done}/${progress.total})` : ''}
+                    {hidden > 0 ? ` +${hidden} folded` : ''}
                     {depth > 0 && i.kind !== kind ? ` [${i.kind}]` : ''}
                     {i.status === 'obsolete' ? ' (obsolete)' : ''}
                     {i.outcome && !isOpen(i) ? ` → ${i.outcome}` : ''}
                   </Text>
+                  </Box>
                   <Box display="none" hover={{ display: 'flex' }} flexDirection="column" borderStyle="round">
                     <Text bold>
                       {i.id}. {i.title}

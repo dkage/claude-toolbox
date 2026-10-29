@@ -41,6 +41,6 @@ export type LedgerSave = LedgerOrigin & {
 
 declare module 'claude-code' {
   interface PluginState {
-    ledger: { items: LedgerItem[] }
+    ledger: { items: LedgerItem[]; folded: number[]; hideDone: boolean }
   }
 }
