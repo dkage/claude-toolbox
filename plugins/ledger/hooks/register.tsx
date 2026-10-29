@@ -200,11 +200,19 @@ async function ledgersDir($: EngineInterface, project: string) {
   return `${(await $.env.get('HOME')) ?? '~'}/.claude/ledgers/${slug(project)}`
 }
 
-/** Mirrors the session's ledger to the store, so a restart or /clear can bring it back. */
-async function save($: EngineInterface) {
+/**
+ * Mirrors the session's ledger to the store, so a restart or /clear can bring
+ * it back. `sessionId` names the session it belongs to when the engine may
+ * already answer the next one's (at session.end).
+ */
+async function save($: EngineInterface, sessionId?: string) {
   try {
-    const origin = await originOf($)
-    const entry: LedgerSave = { ...origin, updatedAt: new Date().toISOString(), items: await read($, items) }
+    const origin = { ...(await originOf($)), ...(sessionId ? { sessionId } : {}) }
+    const list: LedgerItem[] = await read($, items)
+    if (list.length === 0) {
+      return
+    }
+    const entry: LedgerSave = { ...origin, updatedAt: new Date().toISOString(), items: list }
     await $.store.set(`session:${origin.sessionId}`, entry)
     const saves = await storedSaves($)
     for (const old of saves.slice(SAVES_KEPT)) {
@@ -313,9 +321,22 @@ export const register: Register = on => {
       argumentHint: '[file.json | list] [--replace]',
     })
     void $.ui.open({ id: PANE, title: 'Ledger' })
+    // A reload into a live session: save a ledger the store has not seen yet.
+    void (async () => {
+      if ((await $.store.get(`session:${await $.session.id()}`)) === undefined) {
+        await save($)
+      }
+    })().catch(() => undefined)
 
     return next(e)
   })
+
+  // /clear and /new empty the session's state: keep the ledger as it ends.
+  on('session.end', async ($, e, next) => {
+    await save($, e.sessionId)
+
+    return next(e)
+  }).catch((_$, e, next) => next(e))
 
   on('command.run', { command: 'ledger' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Ledger' })
@@ -527,6 +548,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Link, Text } = $.ui.resolve(e)
+    const width = e.props.bodyColumns
     const list: LedgerItem[] = await read($, items)
 
     if (list.length === 0) {
@@ -541,15 +563,41 @@ export const register: Register = on => {
             {rows.map(({ item: i, depth, guide }) => {
               const link = linkOf(i)
 
+              // One line per item, cut to the pane; the whole item shows in a card while hovered.
               return (
-                <Text dimColor={!isOpen(i)}>
-                  {guide}
-                  {isOpen(i) ? '☐' : i.status === 'resolved' ? '✓' : '–'} {i.id}.{' '}
-                  {link ? <Link href={link}>{i.title}</Link> : i.title}
-                  {depth > 0 && i.kind !== kind ? ` [${i.kind}]` : ''}
-                  {i.status === 'obsolete' ? ' (obsolete)' : ''}
-                  {i.outcome && !isOpen(i) ? ` → ${i.outcome}` : ''}
-                </Text>
+                <Box key={`item-${i.id}`} flexDirection="column">
+                  <Text dimColor={!isOpen(i)} wrap="truncate-end">
+                    {guide}
+                    {isOpen(i) ? '☐' : i.status === 'resolved' ? '✓' : '–'} {i.id}.{' '}
+                    {link ? <Link href={link}>{i.title}</Link> : i.title}
+                    {depth > 0 && i.kind !== kind ? ` [${i.kind}]` : ''}
+                    {i.status === 'obsolete' ? ' (obsolete)' : ''}
+                    {i.outcome && !isOpen(i) ? ` → ${i.outcome}` : ''}
+                  </Text>
+                  <Box
+                    position="absolute"
+                    top={1}
+                    left={0}
+                    width={width}
+                    display="none"
+                    hover={{ display: 'flex' }}
+                    flexDirection="column"
+                    borderStyle="round"
+                    backgroundColor="black"
+                  >
+                    <Text bold>
+                      {i.id}. {i.title}
+                    </Text>
+                    <Text dimColor>
+                      {i.kind}, {i.status}
+                      {i.parent ? `, under ${i.parent}` : ''}
+                    </Text>
+                    {i.where ? <Text>{i.where}</Text> : null}
+                    {i.detail ? <Text>{i.detail}</Text> : null}
+                    {link ? <Link href={link}>{link}</Link> : null}
+                    {i.outcome ? <Text>→ {i.outcome}</Text> : null}
+                  </Box>
+                </Box>
               )
             })}
             <Text> </Text>

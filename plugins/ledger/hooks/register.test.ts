@@ -25,6 +25,7 @@ function engine(on: On, session = 'S1') {
   const store = new Map<string, unknown>()
   const prompts: string[] = []
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.end', (_$, e) => ({ sessionId: (e as { sessionId: string }).sessionId }) as never)
   on('tool.register', (_$, e) => ({ value: { tool: `mcp__ledger__${e.name}` } }) as never)
   on('command.register', () => ({ value: {} }) as never)
   on('ui.open', () => ({ value: { isPlaced: false } }) as never)
@@ -183,6 +184,44 @@ test('every change is auto-saved under the session id', async ($, on) => {
   expect(saved.items.map(i => i.title)).toEqual(['kept'])
 })
 
+test('a session that ends saves its ledger under its own id', async ($, on) => {
+  const { store } = engine(on, 'NEXT')
+  on('state.get', () => ({
+    value: { value: [{ id: 4, kind: 'gap', title: 'Untouched', status: 'open' }], version: 1 },
+  }))
+
+  await $.session.end({ reason: 'clear', sessionId: 'ENDING', resume: {} } as never)
+
+  const saved = store.get('session:ENDING') as { items: { title: string }[] }
+  expect(saved.items.map(i => i.title)).toEqual(['Untouched'])
+  expect(store.has('session:NEXT')).toBe(false)
+})
+
+test('a reload saves a ledger the store has not seen', async ($, on) => {
+  const { store } = engine(on)
+  const clock = mock.clock(on)
+  on('state.get', () => ({
+    value: { value: [{ id: 2, kind: 'bug', title: 'From before', status: 'open' }], version: 1 },
+  }))
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const saved = store.get('session:S1') as { items: { title: string }[] }
+  expect(saved.items.map(i => i.title)).toEqual(['From before'])
+})
+
+test('an empty ledger is never saved', async ($, on) => {
+  const { store } = engine(on)
+  const clock = mock.clock(on)
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  await $.session.end({ reason: 'clear', sessionId: 'S1', resume: {} } as never)
+
+  expect(store.size).toBe(0)
+})
+
 test('export writes JSON and Markdown, then asks for the briefing', async ($, on) => {
   const { files, prompts } = engine(on)
   const clock = mock.clock(on)
@@ -261,4 +300,26 @@ test('import asks before replacing a ledger that has items', async ($, on) => {
   expect(String(replaced.text)).toContain('Imported 1 ledger items from auto-save of session OLD')
   const list = await $.tool.call({ tool: TOOL, action: 'list' })
   expect(String(list.result)).toBe('3 [gap] Saved')
+})
+
+test('a row is cut to one line and its card holds the whole item', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: TOOL,
+    action: 'add',
+    kind: 'gap',
+    title: 'A title long enough to be cut',
+    detail: 'The whole story.',
+    where: 'src/a.ts:3',
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const row = await ui.find({ type: 'Text', text: /☐ 1\./ })
+    expect(row?.props.wrap).toBe('truncate-end')
+    expect((await ui.find({ type: 'Text', text: /The whole story/ }))?.text).toBe('The whole story.')
+    expect((await ui.find({ type: 'Text', text: /src\/a\.ts:3/ }))?.text).toBe('src/a.ts:3')
+    await ui.unmount()
+  }
 })
