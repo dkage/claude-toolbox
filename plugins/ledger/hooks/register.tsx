@@ -10,6 +10,8 @@ const SAVES_KEPT = 30
 const items = atom({ plugin: 'ledger', key: 'items' } as const, [])
 const folded = atom({ plugin: 'ledger', key: 'folded' } as const, [])
 const hideDone = atom({ plugin: 'ledger', key: 'hideDone' } as const, false)
+/** The session the last ledger was offered to, so the offer comes once. */
+const offeredFor = atom({ plugin: 'ledger', key: 'offeredFor' } as const, '')
 
 const KINDS: { kind: LedgerKind; title: string }[] = [
   { kind: 'decision', title: 'Decisions' },
@@ -411,6 +413,42 @@ async function addMany($: EngineInterface, list: LedgerItem[], batch: NewItem[])
   }
 }
 
+/** Renumbers incoming items after the current ones, keeping their order and their parents. */
+function renumber(incoming: LedgerItem[], current: LedgerItem[]): LedgerItem[] {
+  const base = current.reduce((max, i) => Math.max(max, i.id), 0)
+  const ids = new Map([...incoming].sort((a, b) => a.id - b.id).map((i, n) => [i.id, base + n + 1]))
+
+  return incoming.map(i => ({
+    ...i,
+    id: ids.get(i.id) as number,
+    parent: i.parent === undefined ? undefined : ids.get(i.parent),
+  }))
+}
+
+/**
+ * On an empty ledger, once per session: point at the newest ledger of this
+ * project and put /ledger-import in an empty prompt. Nothing loads by itself.
+ */
+async function offer($: EngineInterface) {
+  try {
+    const sessionId = await $.session.id()
+    if ((await read($, items)).length > 0 || (await read($, offeredFor)) === sessionId) {
+      return
+    }
+    const [latest] = await sources($)
+    if (!latest) {
+      return
+    }
+    await update($, offeredFor, () => sessionId)
+    $.ui.toast(`Ledger available: ${latest.label}. Run /ledger-import to load it.`)
+    if ((await $.prompt.read()).text === '') {
+      await $.prompt.fill({ text: '/ledger-import' })
+    }
+  } catch (error) {
+    $.ui.log(`ledger: offer failed: ${String(error)}`, { to: 'debug' })
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.tool.register({
@@ -471,7 +509,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'ledger-import',
       description: "Load an exported or another session's ledger into this session",
-      argumentHint: '[file.json | list] [--replace]',
+      argumentHint: '[file.json | list] [--replace | --merge]',
     })
     void $.ui.open({ id: PANE, title: 'Ledger' })
     // A reload into a live session: save a ledger the store has not seen yet.
@@ -480,6 +518,7 @@ export const register: Register = on => {
         await save($)
       }
     })().catch(() => undefined)
+    $.clock.after(500, () => void offer($))
 
     return next(e)
   })
@@ -487,6 +526,10 @@ export const register: Register = on => {
   // /clear and /new empty the session's state: keep the ledger as it ends.
   on('session.end', async ($, e, next) => {
     await save($, e.sessionId)
+    if (e.reason === 'clear') {
+      // The process goes on as a new, empty session: offer the ledger just saved.
+      $.clock.after(500, () => void offer($))
+    }
 
     return next(e)
   }).catch((_$, e, next) => next(e))
@@ -536,7 +579,8 @@ export const register: Register = on => {
   on('command.run', { command: 'ledger-import' }, async ($, e) => {
     const words = e.args.trim().split(/\s+/).filter(Boolean)
     const replace = words.includes('--replace')
-    const arg = words.filter(w => w !== '--replace').join(' ')
+    const merge = words.includes('--merge')
+    const arg = words.filter(w => w !== '--replace' && w !== '--merge').join(' ')
 
     let label: string
     let data: LedgerExport
@@ -570,20 +614,23 @@ export const register: Register = on => {
       return { text: `${label} has no ledger items to import.` }
     }
     const current: LedgerItem[] = await read($, items)
-    if (current.length > 0 && !replace) {
+    if (current.length > 0 && !replace && !merge) {
+      const again = `/ledger-import ${arg ? `${arg} ` : ''}`
+
       return {
-        text: `This session's ledger already has ${current.length} items. Run /ledger-import ${arg ? `${arg} ` : ''}--replace to replace them with the ${incoming.length} items of ${label}.`,
+        text: `This session's ledger already has ${current.length} items. Run ${again}--replace to replace them with the ${incoming.length} items of ${label}, or ${again}--merge to add them after the current ones, renumbered.`,
       }
     }
-    await update($, items, () => incoming)
+    const merged = merge && current.length > 0
+    await update($, items, (now: LedgerItem[]) => (merged ? [...now, ...renumber(incoming, now)] : incoming))
     await save($)
     await refresh($)
     void $.ui.open({ id: PANE, title: 'Ledger' })
 
     return {
-      text: `Imported ${incoming.length} ledger items from ${label}.`,
+      text: `Imported ${incoming.length} ledger items from ${label}${merged ? ', renumbered after the current ones' : ''}.`,
       context: [
-        `The ledger was imported from ${label} (session ${data.sessionId}${data.branch ? `, branch ${data.branch}` : ''}, ${data.exportedAt}). Item numbers are those of that session.${data.briefing ? `\n\nBriefing from that session:\n\n${data.briefing}` : ''}`,
+        `The ledger was imported from ${label} (session ${data.sessionId}${data.branch ? `, branch ${data.branch}` : ''}, ${data.exportedAt}). ${merged ? 'Its items were renumbered after the ones already here, so numbers in the briefing below are that session’s, not this ledger’s.' : 'Item numbers are those of that session.'}${data.briefing ? `\n\nBriefing from that session:\n\n${data.briefing}` : ''}`,
       ],
     }
   })

@@ -481,3 +481,59 @@ test('finished items hide, but a finished parent of open work stays', async ($, 
   const shown = await $.command.run(run('ledger', 'done'))
   expect(String(shown.text)).toBe('Finished ledger items are shown.')
 })
+
+test('merge renumbers the incoming items after the current ones', async ($, on) => {
+  const { files } = engine(on)
+  files.set(
+    '/work/demo/m.json',
+    JSON.stringify({
+      format: 'ledger/1',
+      sessionId: 'OLD',
+      project: 'demo',
+      root: '/work/demo',
+      branch: null,
+      exportedAt: '2026-01-01T00:00:00Z',
+      briefing: null,
+      items: [
+        { id: 1, kind: 'gap', title: 'Their epic', status: 'open' },
+        { id: 2, kind: 'gap', title: 'Their issue', status: 'open', parent: 1 },
+      ],
+    }),
+  )
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'bug', title: 'Mine' })
+
+  const asked = await $.command.run(run('ledger-import', 'm.json'))
+  expect(String(asked.text)).toContain('--merge')
+  const out = await $.command.run(run('ledger-import', 'm.json --merge'))
+  expect(String(out.text)).toContain('renumbered after the current ones')
+  const list = await $.tool.call({ tool: TOOL, action: 'list' })
+  expect(String(list.result)).toBe('1 [bug] Mine\n2 [gap] Their epic\n3 [gap] Their issue under 2')
+})
+
+test('an empty session is offered the newest ledger once, without loading it', async ($, on) => {
+  const { store } = engine(on)
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  const fills: string[] = []
+  on('ui.toast', (_$, e) => (toasts.push((e as { text: string }).text), { value: undefined }) as never)
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }) as never)
+  on('prompt.fill', (_$, e) => (fills.push((e as { text: string }).text), { isFilled: true }) as never)
+  store.set('session:OLD', {
+    sessionId: 'OLD',
+    project: 'demo',
+    root: '/work/demo',
+    branch: 'main',
+    updatedAt: '2026-01-01T00:00:00Z',
+    items: [{ id: 1, kind: 'gap', title: 'Saved', status: 'open' }],
+  })
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.advance(500)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.advance(500)
+
+  expect(toasts).toEqual(['Ledger available: auto-save of session OLD (main), 1 items. Run /ledger-import to load it.'])
+  expect(fills).toEqual(['/ledger-import'])
+  expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toBe('Ledger: nothing open.')
+})
