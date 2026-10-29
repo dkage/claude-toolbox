@@ -1,6 +1,6 @@
 {
   "name": "ledger",
   "version": "0.7.0",
-  "description": "A numbered side-panel ledger of decisions, bugs, gaps and smells found during a session, nested as a tree, auto-saved, and exportable with a briefing to continue in another session.",
+  "description": "A numbered side-panel ledger of decisions, bugs, gaps and smells found during a session, nested as a tree with progress, notes and folding, auto-saved, exportable with a briefing, and synced with linked GitHub issues.",
   "types": "./types/index.d.ts"
 }
