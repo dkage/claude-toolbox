@@ -323,3 +323,29 @@ test('a row is cut to one line and its card holds the whole item', async ($, on)
     await ui.unmount()
   }
 })
+
+/** The `top` of a row's hover card: the second child of the row's keyed Box. */
+async function cardTopOf(ui: { find: (q: { key: string }) => Promise<{ children: unknown[] } | undefined> }, id: number) {
+  const row = await ui.find({ key: `item-${id}` })
+
+  return (row?.children[1] as { props: { top: number } } | undefined)?.props.top
+}
+
+test('a card opens below its row when it fits, else above it', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  for (const title of ['one', 'two', 'three', 'four', 'five', 'six']) {
+    await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title })
+  }
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 8 } } })
+  // Gaps heading on line 0, items 1 to 6 on lines 1 to 6; each card is 4 lines tall.
+  expect(await cardTopOf(ui, 1)).toBe(1)
+  expect(await cardTopOf(ui, 6)).toBe(-4)
+  await ui.unmount()
+
+  const short = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, scroll: { offset: 0, bodyRows: 5 } } })
+  // Room neither below nor above row 2: the card starts at the pane's top.
+  expect(await cardTopOf(short, 2)).toBe(-2)
+  await short.unmount()
+})
