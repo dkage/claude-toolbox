@@ -12,7 +12,7 @@
     },
     {
       "name": "ledger",
-      "description": "A numbered side-panel ledger of decisions, bugs, gaps and smells found during a session; refer to items as \"13 (ledger)\".",
+      "description": "A numbered side-panel ledger of decisions, bugs, gaps and smells found during a session, nested as a tree and auto-saved; refer to items as \"13 (ledger)\", export them with a briefing and import them in another session.",
       "source": "./plugins/ledger"
     }
   ]

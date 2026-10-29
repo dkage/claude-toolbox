@@ -8,7 +8,7 @@ plugin, listed in `.claude-plugin/marketplace.json`.
 | Plugin | What it does |
 | --- | --- |
 | `usage-bars` | A band above the prompt: context bar, 5h and weekly usage bars with reset countdowns, a `compact soon` hint from 90% context, and the active model on the right. Drops pieces as the terminal narrows. |
-| `ledger` | A side panel that numbers the decisions, bugs, gaps and smells Claude finds during a session, ticks them off as they are decided and retires the ones that stop mattering. Write `13 (ledger)` in a prompt to point at item 13. `/ledger` reopens the panel. |
+| `ledger` | A side panel that numbers the decisions, bugs, gaps and smells Claude finds during a session, ticks them off as they are decided and retires the ones that stop mattering. Items nest under one another as a tree (an issue under its epic), and an item with a URL is a clickable link. Write `13 (ledger)` in a prompt to point at item 13. `/ledger` reopens the panel. The ledger is auto-saved across sessions; `/ledger-export [dir]` writes it as JSON and Markdown with a briefing Claude writes for the next session, and `/ledger-import [file.json \| list] [--replace]` loads an export or the latest auto-save of the project. |
 
 ## Install
 
