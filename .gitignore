@@ -1,3 +1,19 @@
+# OS and editors
 .DS_Store
+.idea/
+.vscode/
+*.swp
+
 # Written by the engine on every load of a mod.
 **/.claude-plugin/types/
+
+# Tooling, if a plugin ever gains a package.json or a local type-check setup
+node_modules/
+*.log
+*.tsbuildinfo
+coverage/
+
+# Local secrets and scratch
+.env
+.env.*
+*.local.*
