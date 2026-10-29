@@ -1,5 +1,8 @@
 export type LedgerKind = 'decision' | 'bug' | 'gap' | 'smell'
-export type LedgerStatus = 'open' | 'resolved' | 'obsolete'
+export type LedgerStatus = 'open' | 'in-progress' | 'resolved' | 'obsolete'
+
+/** A dated line of progress on an item. */
+export type LedgerNote = { at: string; text: string }
 
 export type LedgerItem = {
   id: number
@@ -11,6 +14,7 @@ export type LedgerItem = {
   parent?: number
   status: LedgerStatus
   outcome?: string
+  notes?: LedgerNote[]
 }
 
 /** Where a ledger came from: kept with every export and every auto-save. */

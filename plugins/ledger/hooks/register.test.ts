@@ -339,3 +339,59 @@ test('only the number is a link, and the card opens in the flow', async ($, on) 
   expect(card?.props.position).toBeUndefined()
   await ui.unmount()
 })
+
+test('a started item is in progress, drawn first and still open', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Waiting' })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Working' })
+
+  const started = await $.tool.call({ tool: TOOL, action: 'start', id: 2 })
+  expect(String(started.result)).toContain('2 (ledger) is now in-progress')
+  const list = await $.tool.call({ tool: TOOL, action: 'list' })
+  expect(String(list.result)).toContain('2 [gap] (in progress) Working')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const first = await ui.find({ type: 'Text', text: /^[☐◐]/ })
+  expect(first?.text).toBe('◐ 2. Working')
+  await ui.unmount()
+})
+
+test('edit changes fields and keeps the number; an empty string clears', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'bug', title: 'Tpyo', where: 'a.ts:1', detail: 'old' })
+
+  await $.tool.call({ tool: TOOL, action: 'edit', id: 1, title: 'Typo', kind: 'smell', detail: '', url: 'https://example.com/x' })
+  const list = await $.tool.call({ tool: TOOL, action: 'list' })
+  expect(String(list.result)).toBe('1 [smell] Typo (a.ts:1)')
+
+  const refused = await $.tool.call({ tool: TOOL, action: 'edit', id: 1, title: '' })
+  expect(String(refused.deny)).toContain('needs a title')
+})
+
+test('notes are dated, shown in the card and in the context', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Step work' })
+  await $.tool.call({ tool: TOOL, action: 'note', id: 1, note: 'Steps 1-4 done' })
+  await $.tool.call({ tool: TOOL, action: 'note', id: 1, note: 'Step 5 pending' })
+
+  const list = await $.tool.call({ tool: TOOL, action: 'list' })
+  expect(String(list.result)).toMatch(/last note \d{4}-\d\d-\d\d: Step 5 pending$/)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Steps 1-4 done/ }))?.text).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d Steps 1-4 done$/)
+  await ui.unmount()
+  const empty = await $.tool.call({ tool: TOOL, action: 'note', id: 1 })
+  expect(String(empty.deny)).toContain('needs "note"')
+})
+
+test('an unknown action is refused and changes nothing', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Safe' })
+
+  const odd = await $.tool.call({ tool: TOOL, action: 'frobnicate', id: 1 })
+  expect(String(odd.deny)).toContain('Unknown action')
+  expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toBe('1 [gap] Safe')
+})

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { LedgerExport, LedgerItem, LedgerKind, LedgerOrigin, LedgerSave, LedgerStatus } from '../types'
+import type { LedgerExport, LedgerItem, LedgerKind, LedgerNote, LedgerOrigin, LedgerSave, LedgerStatus } from '../types'
 
 const PANE = 'ledger'
 const TOOL = 'mcp__ledger__ledger'
@@ -15,10 +15,10 @@ const KINDS: { kind: LedgerKind; title: string }[] = [
   { kind: 'gap', title: 'Gaps' },
   { kind: 'smell', title: 'Smells' },
 ]
-const STATUSES: LedgerStatus[] = ['open', 'resolved', 'obsolete']
+const STATUSES: LedgerStatus[] = ['open', 'in-progress', 'resolved', 'obsolete']
 
 type Input = {
-  action: 'add' | 'resolve' | 'obsolete' | 'reopen' | 'move' | 'list' | 'brief'
+  action: 'add' | 'start' | 'resolve' | 'obsolete' | 'reopen' | 'move' | 'edit' | 'note' | 'list' | 'brief'
   kind?: LedgerKind
   title?: string
   detail?: string
@@ -27,15 +27,24 @@ type Input = {
   parent?: number
   id?: number
   outcome?: string
+  note?: string
   path?: string
   briefing?: string
 }
 
-const describe = (i: LedgerItem) =>
-  `${i.id} [${i.kind}] ${i.title}${i.where ? ` (${i.where})` : ''}${i.parent ? ` under ${i.parent}` : ''}`
+const lastNote = (i: LedgerItem) => i.notes?.[i.notes.length - 1]
+
+const describe = (i: LedgerItem) => {
+  const note = lastNote(i)
+
+  return `${i.id} [${i.kind}]${i.status === 'in-progress' ? ' (in progress)' : ''} ${i.title}${i.where ? ` (${i.where})` : ''}${i.parent ? ` under ${i.parent}` : ''}${note ? ` | last note ${note.at.slice(0, 10)}: ${note.text.slice(0, 160)}` : ''}`
+}
 
 const RULES = `The ledger is a numbered list the person keeps in a side panel of open decisions, bugs, gaps and code smells found during this session. Use the ${TOOL} tool:
 - add: when you find a confirmed bug, a spec or documentation gap, a code smell worth tracking, or a decision the person must make that you cannot settle yourself. Log it as soon as you find it, with a short title and, when known, "where" (file:line), "detail" (for a decision, the options) and "url" (an issue or page it tracks; the panel makes the title a link). Give "parent" (an item number) to nest it under another item, as an issue under its epic. Do not log trivia or things you will simply do as part of the task.
+- start: when you begin working on an item; it shows as in progress until resolved.
+- note: append a dated line of progress to an item ("note"): what was done, what is left, where you stopped. Prefer notes over rewriting the title, so the next session can pick up the item.
+- edit: fix an item's "title", "kind", "detail", "where" or "url" without changing its number; an empty string clears detail, where or url.
 - resolve: when the person decides or the item is dealt with; put what was done in "outcome".
 - obsolete: when a finding stops mattering (for example the code was removed or the premise was wrong); say why in "outcome". Check the open items whenever your work could invalidate one.
 - move: set an item's "parent", or 0 to make it top-level.
@@ -45,9 +54,17 @@ A number followed by "(ledger)" (e.g. "13 (ledger)") or written "L13" refers to 
 
 const linkOf = (i: LedgerItem) => i.url ?? i.detail?.match(/https?:\/\/[^\s|<>()[\]]+/)?.[0]
 
-const isOpen = (i: LedgerItem) => i.status === 'open'
+/** Not finished yet: open or in progress. */
+const isOpen = (i: LedgerItem) => i.status === 'open' || i.status === 'in-progress'
 
-const openFirst = (list: LedgerItem[]) => [...list.filter(isOpen), ...list.filter(i => !isOpen(i))]
+/** In progress first, then open, then finished, each in the order logged. */
+const openFirst = (list: LedgerItem[]) => [
+  ...list.filter(i => i.status === 'in-progress'),
+  ...list.filter(i => i.status === 'open'),
+  ...list.filter(i => !isOpen(i)),
+]
+
+const GLYPHS: Record<LedgerStatus, string> = { open: '☐', 'in-progress': '◐', resolved: '✓', obsolete: '–' }
 
 /** The item's parent, unless it is missing or its chain loops back. */
 function parentOf(i: LedgerItem, byId: Map<number, LedgerItem>): LedgerItem | undefined {
@@ -122,6 +139,11 @@ function sanitize(raw: unknown): LedgerItem[] {
       return []
     }
     const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined)
+    const notes = Array.isArray(i.notes)
+      ? i.notes.filter(
+          (n): n is LedgerNote => !!n && typeof n.at === 'string' && typeof n.text === 'string' && n.text !== '',
+        )
+      : []
 
     return [
       {
@@ -134,6 +156,7 @@ function sanitize(raw: unknown): LedgerItem[] {
         parent: typeof i.parent === 'number' ? i.parent : undefined,
         status: STATUSES.find(s => s === i.status) ?? 'open',
         outcome: text(i.outcome),
+        notes: notes.length ? notes : undefined,
       },
     ]
   })
@@ -164,10 +187,13 @@ function markdown(data: LedgerExport): string {
       const name = link ? `[${i.title}](${link})` : i.title
       const tag = depth > 0 && i.kind !== kind ? ` [${i.kind}]` : ''
       lines.push(
-        `${pad}- [${isOpen(i) ? ' ' : 'x'}] ${i.id}. ${name}${tag}${i.status === 'obsolete' ? ' (obsolete)' : ''}${i.where ? ` (\`${i.where}\`)` : ''}`,
+        `${pad}- [${isOpen(i) ? ' ' : 'x'}] ${i.id}. ${name}${tag}${i.status === 'in-progress' ? ' (in progress)' : ''}${i.status === 'obsolete' ? ' (obsolete)' : ''}${i.where ? ` (\`${i.where}\`)` : ''}`,
       )
       if (i.detail) {
         lines.push(`${pad}  - ${i.detail}`)
+      }
+      for (const note of i.notes ?? []) {
+        lines.push(`${pad}  - ${note.at.slice(0, 16).replace('T', ' ')}: ${note.text}`)
       }
       if (i.outcome) {
         lines.push(`${pad}  - → ${i.outcome}`)
@@ -234,8 +260,10 @@ async function storedSaves($: EngineInterface): Promise<LedgerSave[]> {
 }
 
 async function refresh($: EngineInterface) {
-  const open = (await read($, items)).filter(isOpen).length
-  $.ui.status(open > 0 ? `ledger: ${open} open` : undefined)
+  const list: LedgerItem[] = await read($, items)
+  const open = list.filter(isOpen).length
+  const active = list.filter(i => i.status === 'in-progress').length
+  $.ui.status(open > 0 ? `ledger: ${open} open${active ? `, ${active} in progress` : ''}` : undefined)
 }
 
 type Source = { label: string; at: string; load: () => Promise<LedgerExport> }
@@ -289,20 +317,24 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'ledger',
       description:
-        'Log, resolve or retire numbered items (decisions, bugs, gaps, smells) in the ledger side panel the person is watching, nest them under one another, and write the briefing of an export. Actions: add, resolve, obsolete, reopen, move, list, brief.',
+        'Log, track, resolve or retire numbered items (decisions, bugs, gaps, smells) in the ledger side panel the person is watching, nest them under one another, note progress on them, and write the briefing of an export. Actions: add, start, note, edit, resolve, obsolete, reopen, move, list, brief.',
       isDeferred: false,
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['add', 'resolve', 'obsolete', 'reopen', 'move', 'list', 'brief'] },
+          action: {
+            type: 'string',
+            enum: ['add', 'start', 'note', 'edit', 'resolve', 'obsolete', 'reopen', 'move', 'list', 'brief'],
+          },
           kind: { type: 'string', enum: ['decision', 'bug', 'gap', 'smell'] },
-          title: { type: 'string', description: 'Short one-line title (add).' },
-          detail: { type: 'string', description: 'Context or, for a decision, the options (add).' },
-          where: { type: 'string', description: 'file:line the item concerns (add).' },
-          url: { type: 'string', description: 'Link to the issue or page the item tracks (add).' },
+          title: { type: 'string', description: 'Short one-line title (add, edit).' },
+          detail: { type: 'string', description: 'Context or, for a decision, the options (add, edit).' },
+          where: { type: 'string', description: 'file:line the item concerns (add, edit).' },
+          url: { type: 'string', description: 'Link to the issue or page the item tracks (add, edit).' },
           parent: { type: 'integer', description: 'Item number to nest under (add, move); 0 makes it top-level (move).' },
-          id: { type: 'integer', description: 'Item number (resolve, obsolete, reopen, move).' },
+          id: { type: 'integer', description: 'Item number (start, note, edit, resolve, obsolete, reopen, move).' },
           outcome: { type: 'string', description: 'What was decided or done, or why obsolete.' },
+          note: { type: 'string', description: 'A line of progress to append, dated (note).' },
           path: { type: 'string', description: 'The export file the briefing belongs to (brief).' },
           briefing: { type: 'string', description: 'The session briefing, in Markdown (brief).' },
         },
@@ -492,6 +524,43 @@ export const register: Register = on => {
       return { deny: `No ledger item ${input.id}.` }
     }
 
+    if (input.action === 'edit') {
+      if (input.title === '') {
+        return { deny: 'An item needs a title; leave "title" out to keep it.' }
+      }
+      const cleared = (v: string | undefined, was: string | undefined) => (v === undefined ? was : v || undefined)
+      await update($, items, (current: LedgerItem[]) =>
+        current.map(i =>
+          i.id === target.id
+            ? {
+                ...i,
+                title: input.title ?? i.title,
+                kind: input.kind ?? i.kind,
+                detail: cleared(input.detail, i.detail),
+                where: cleared(input.where, i.where),
+                url: cleared(input.url, i.url),
+              }
+            : i,
+        ),
+      )
+      await save($)
+
+      return { result: `${target.id} (ledger) edited.` }
+    }
+
+    if (input.action === 'note') {
+      if (!input.note) {
+        return { deny: 'note needs "note".' }
+      }
+      const note = { at: new Date().toISOString(), text: input.note }
+      await update($, items, (current: LedgerItem[]) =>
+        current.map(i => (i.id === target.id ? { ...i, notes: [...(i.notes ?? []), note] } : i)),
+      )
+      await save($)
+
+      return { result: `Note added to ${target.id} (ledger).` }
+    }
+
     if (input.action === 'move') {
       if (parent && (parent.id === target.id || descendants(target.id, list).some(d => d.id === parent.id))) {
         return { deny: `${parent.id} is ${target.id} or one of its children; an item cannot sit under itself.` }
@@ -504,13 +573,18 @@ export const register: Register = on => {
       return { result: `${target.id} (ledger) is now ${parent ? `under ${parent.id}` : 'top-level'}.` }
     }
 
-    const status = { resolve: 'resolved', obsolete: 'obsolete', reopen: 'open' }[input.action] as LedgerStatus
+    const status = { start: 'in-progress', resolve: 'resolved', obsolete: 'obsolete', reopen: 'open' }[
+      input.action
+    ] as LedgerStatus | undefined
+    if (!status) {
+      return { deny: `Unknown action "${input.action}".` }
+    }
     await update($, items, (current: LedgerItem[]) =>
       current.map(i => (i.id === target.id ? { ...i, status, outcome: input.outcome ?? i.outcome } : i)),
     )
     await save($)
     await refresh($)
-    const stillOpen = status === 'open' ? [] : descendants(target.id, list).filter(isOpen)
+    const stillOpen = isOpen({ ...target, status }) ? [] : descendants(target.id, list).filter(isOpen)
 
     return {
       result: `${target.id} (ledger) is now ${status}.${stillOpen.length ? ` It still has open children: ${stillOpen.map(i => i.id).join(', ')}.` : ''}`,
@@ -540,7 +614,7 @@ export const register: Register = on => {
       .filter(i => ids.has(i.id))
       .map(
         i =>
-          `Ledger ${i.id} (${i.status}): ${i.title}${i.detail ? ` | ${i.detail}` : ''}${i.where ? ` | ${i.where}` : ''}${i.url ? ` | ${i.url}` : ''}`,
+          `Ledger ${i.id} (${i.status}): ${i.title}${i.detail ? ` | ${i.detail}` : ''}${i.where ? ` | ${i.where}` : ''}${i.url ? ` | ${i.url}` : ''}${(i.notes ?? []).map(n => `\n  ${n.at.slice(0, 16).replace('T', ' ')}: ${n.text}`).join('')}`,
       )
 
     return next(notes.length ? { ...e, text: `${text}\n\n${notes.join('\n')}` } : e)
@@ -569,7 +643,7 @@ export const register: Register = on => {
                 <Box key={`item-${i.id}`} flexDirection="column">
                   <Text dimColor={!isOpen(i)} wrap="truncate-end">
                     {guide}
-                    {isOpen(i) ? '☐' : i.status === 'resolved' ? '✓' : '–'}{' '}
+                    {GLYPHS[i.status]}{' '}
                     {link ? <Link href={link}>{`${i.id}.`}</Link> : `${i.id}.`} {i.title}
                     {depth > 0 && i.kind !== kind ? ` [${i.kind}]` : ''}
                     {i.status === 'obsolete' ? ' (obsolete)' : ''}
@@ -580,12 +654,17 @@ export const register: Register = on => {
                       {i.id}. {i.title}
                     </Text>
                     <Text dimColor>
-                      {i.kind}, {i.status}
+                      {i.kind}, {i.status === 'in-progress' ? 'in progress' : i.status}
                       {i.parent ? `, under ${i.parent}` : ''}
                     </Text>
                     {i.where ? <Text>{i.where}</Text> : null}
                     {i.detail ? <Text>{i.detail}</Text> : null}
                     {link ? <Link href={link}>{link}</Link> : null}
+                    {(i.notes ?? []).map(n => (
+                      <Text>
+                        <Text dimColor>{n.at.slice(0, 16).replace('T', ' ')}</Text> {n.text}
+                      </Text>
+                    ))}
                     {i.outcome ? <Text>→ {i.outcome}</Text> : null}
                   </Box>
                 </Box>
