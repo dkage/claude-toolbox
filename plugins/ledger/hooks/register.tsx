@@ -70,6 +70,8 @@ const RULES = `The ledger is a numbered list the person keeps in a side panel of
 - When the person says "add them to the ledger", log everything open from the conversation that is not on the list yet.
 A number followed by "(ledger)" (e.g. "13 (ledger)") or written "L13" refers to the ledger item with that number. Numbers are never reused.`
 
+const GITHUB = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(issues|pull)\/\d+/
+
 const linkOf = (i: LedgerItem) => i.url ?? i.detail?.match(/https?:\/\/[^\s|<>()[\]]+/)?.[0]
 
 /** Not finished yet: open or in progress. */
@@ -199,6 +201,7 @@ function sanitize(raw: unknown): LedgerItem[] {
         status: STATUSES.find(s => s === i.status) ?? 'open',
         outcome: text(i.outcome),
         notes: notes.length ? notes : undefined,
+        github: text(i.github),
       },
     ]
   })
@@ -507,6 +510,10 @@ export const register: Register = on => {
       argumentHint: '[dir or file.json]',
     })
     await $.command.register({
+      name: 'ledger-sync',
+      description: 'Check the GitHub issues and pull requests ledger items link, and resolve the closed ones',
+    })
+    await $.command.register({
       name: 'ledger-import',
       description: "Load an exported or another session's ledger into this session",
       argumentHint: '[file.json | list] [--replace | --merge]',
@@ -632,6 +639,69 @@ export const register: Register = on => {
       context: [
         `The ledger was imported from ${label} (session ${data.sessionId}${data.branch ? `, branch ${data.branch}` : ''}, ${data.exportedAt}). ${merged ? 'Its items were renumbered after the ones already here, so numbers in the briefing below are that session’s, not this ledger’s.' : 'Item numbers are those of that session.'}${data.briefing ? `\n\nBriefing from that session:\n\n${data.briefing}` : ''}`,
       ],
+    }
+  })
+
+  on('command.run', { command: 'ledger-sync' }, async $ => {
+    const list: LedgerItem[] = await read($, items)
+    const tracked = list.flatMap(i => {
+      const match = linkOf(i)?.match(GITHUB)
+
+      return match ? [{ item: i, url: match[0], what: match[1] === 'pull' ? 'pr' : 'issue' }] : []
+    })
+    if (tracked.length === 0) {
+      return { text: 'No ledger items link a GitHub issue or pull request.' }
+    }
+    const states = new Map<number, { state: string; what: string }>()
+    const failed: string[] = []
+    for (const { item, url, what } of tracked) {
+      try {
+        const gh = await $.process.run(['gh', what, 'view', url, '--json', 'state'], { timeoutMs: 15000 })
+        if (gh.exitCode !== 0) {
+          failed.push(`${item.id} (${gh.stderr.trim().split('\n')[0] || `gh exited ${gh.exitCode}`})`)
+          continue
+        }
+        states.set(item.id, { state: String(JSON.parse(gh.stdout).state).toLowerCase(), what })
+      } catch (error) {
+        failed.push(`${item.id} (${error instanceof Error ? error.message : String(error)})`)
+      }
+    }
+    const isClosed = (state: string) => state === 'closed' || state === 'merged'
+    const closing = list.filter(i => isOpen(i) && isClosed(states.get(i.id)?.state ?? ''))
+    const stale = list.filter(i => !isOpen(i) && states.get(i.id)?.state === 'open')
+    const at = new Date().toISOString()
+    await update($, items, (current: LedgerItem[]) =>
+      current.map(i => {
+        const found = states.get(i.id)
+        if (!found) {
+          return i
+        }
+        if (!isOpen(i) || !isClosed(found.state)) {
+          return { ...i, github: found.state }
+        }
+        const kind = found.what === 'pr' ? 'pull request' : 'issue'
+
+        return {
+          ...i,
+          github: found.state,
+          status: 'resolved' as const,
+          outcome: i.outcome ?? `The ${kind} is ${found.state} on GitHub.`,
+          notes: [...(i.notes ?? []), { at, text: `Resolved by /ledger-sync: the ${kind} is ${found.state}.` }],
+        }
+      }),
+    )
+    await save($)
+    await refresh($)
+
+    return {
+      text: [
+        `Checked ${states.size} of ${tracked.length} GitHub links.`,
+        closing.length ? `Resolved, closed on GitHub: ${closing.map(i => i.id).join(', ')}.` : 'Nothing to resolve.',
+        stale.length ? `Finished here but open on GitHub: ${stale.map(i => i.id).join(', ')}.` : '',
+        failed.length ? `Could not check: ${failed.join('; ')}.` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
     }
   })
 
@@ -866,6 +936,7 @@ export const register: Register = on => {
                     <Text dimColor>
                       {i.kind}, {i.status === 'in-progress' ? 'in progress' : i.status}
                       {i.parent ? `, under ${i.parent}` : ''}
+                      {i.github ? `, GitHub: ${i.github}` : ''}
                     </Text>
                     {i.where ? <Text>{i.where}</Text> : null}
                     {i.detail ? <Text>{i.detail}</Text> : null}

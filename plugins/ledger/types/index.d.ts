@@ -15,6 +15,8 @@ export type LedgerItem = {
   status: LedgerStatus
   outcome?: string
   notes?: LedgerNote[]
+  /** The linked GitHub issue's or pull request's state at the last /ledger-sync. */
+  github?: string
 }
 
 /** Where a ledger came from: kept with every export and every auto-save. */

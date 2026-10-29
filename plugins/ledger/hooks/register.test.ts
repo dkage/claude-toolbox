@@ -24,6 +24,7 @@ function engine(on: On, session = 'S1') {
   const files = new Map<string, string>()
   const store = new Map<string, unknown>()
   const prompts: string[] = []
+  const clock = mock.clock(on)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: (e as { sessionId: string }).sessionId }) as never)
   on('tool.register', (_$, e) => ({ value: { tool: `mcp__ledger__${e.name}` } }) as never)
@@ -35,7 +36,21 @@ function engine(on: On, session = 'S1') {
   on('session.root', () => ({ value: '/work/demo' }) as never)
   on('session.cwd', () => ({ value: '/work/demo' }) as never)
   on('env.get', () => ({ value: '/home/me' }) as never)
-  on('process.run', () => ({ value: { exitCode: 0, stdout: 'feat/x\n', stderr: '' } }) as never)
+  // git answers the branch; gh answers each URL from \`gh\`, or fails for an unknown one.
+  const gh = new Map<string, string>()
+  on('process.run', (_$, e) => {
+    const argv = (e as { argv: string[] }).argv
+    if (argv[0] !== 'gh') {
+      return { value: { exitCode: 0, stdout: 'feat/x\n', stderr: '' } } as never
+    }
+    const state = gh.get(argv[3] as string)
+
+    return {
+      value: state
+        ? { exitCode: 0, stdout: JSON.stringify({ state }), stderr: '' }
+        : { exitCode: 1, stdout: '', stderr: 'GraphQL: Could not resolve to an issue' },
+    } as never
+  })
   on('store.get', (_$, e) => ({ value: store.get((e as { key: string }).key) }) as never)
   on('store.set', (_$, e) => {
     const { key, value } = e as { key: string; value: unknown }
@@ -79,7 +94,7 @@ function engine(on: On, session = 'S1') {
     return { drop: 'captured by the test' } as never
   })
 
-  return { files, store, prompts }
+  return { files, store, prompts, gh, clock }
 }
 
 const run = (command: string, args = '') =>
@@ -200,8 +215,7 @@ test('a session that ends saves its ledger under its own id', async ($, on) => {
 })
 
 test('a reload saves a ledger the store has not seen', async ($, on) => {
-  const { store } = engine(on)
-  const clock = mock.clock(on)
+  const { store, clock } = engine(on)
   on('state.get', () => ({
     value: { value: [{ id: 2, kind: 'bug', title: 'From before', status: 'open' }], version: 1 },
   }))
@@ -214,8 +228,7 @@ test('a reload saves a ledger the store has not seen', async ($, on) => {
 })
 
 test('an empty ledger is never saved', async ($, on) => {
-  const { store } = engine(on)
-  const clock = mock.clock(on)
+  const { store, clock } = engine(on)
 
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   await clock.settle()
@@ -225,8 +238,7 @@ test('an empty ledger is never saved', async ($, on) => {
 })
 
 test('export writes JSON and Markdown, then asks for the briefing', async ($, on) => {
-  const { files, prompts } = engine(on)
-  const clock = mock.clock(on)
+  const { files, prompts, clock } = engine(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Epic', url: 'https://example.com/e' })
 
@@ -512,8 +524,7 @@ test('merge renumbers the incoming items after the current ones', async ($, on) 
 })
 
 test('an empty session is offered the newest ledger once, without loading it', async ($, on) => {
-  const { store } = engine(on)
-  const clock = mock.clock(on)
+  const { store, clock } = engine(on)
   const toasts: string[] = []
   const fills: string[] = []
   on('ui.toast', (_$, e) => (toasts.push((e as { text: string }).text), { value: undefined }) as never)
@@ -536,4 +547,44 @@ test('an empty session is offered the newest ledger once, without loading it', a
   expect(toasts).toEqual(['Ledger available: auto-save of session OLD (main), 1 items. Run /ledger-import to load it.'])
   expect(fills).toEqual(['/ledger-import'])
   expect(String((await $.tool.call({ tool: TOOL, action: 'list' })).result)).toBe('Ledger: nothing open.')
+})
+
+test('sync resolves items whose GitHub issue or PR closed, and reports the rest', async ($, on) => {
+  const { gh } = engine(on)
+  gh.set('https://github.com/o/r/issues/1', 'CLOSED')
+  gh.set('https://github.com/o/r/pull/2', 'MERGED')
+  gh.set('https://github.com/o/r/issues/3', 'OPEN')
+  gh.set('https://github.com/o/r/issues/4', 'OPEN')
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: TOOL,
+    action: 'add',
+    items: [
+      { kind: 'gap', title: 'Closed issue', url: 'https://github.com/o/r/issues/1' },
+      { kind: 'gap', title: 'Merged PR', detail: 'https://github.com/o/r/pull/2 | the fix' },
+      { kind: 'gap', title: 'Open issue', url: 'https://github.com/o/r/issues/3' },
+      { kind: 'gap', title: 'Done here', url: 'https://github.com/o/r/issues/4' },
+      { kind: 'gap', title: 'Gone', url: 'https://github.com/o/r/issues/5' },
+      { kind: 'gap', title: 'Not GitHub', url: 'https://example.com/6' },
+    ],
+  })
+  await $.tool.call({ tool: TOOL, action: 'resolve', id: 4 })
+
+  const out = await $.command.run(run('ledger-sync'))
+  expect(String(out.text)).toBe(
+    'Checked 4 of 5 GitHub links.\nResolved, closed on GitHub: 1, 2.\nFinished here but open on GitHub: 4.\nCould not check: 5 (GraphQL: Could not resolve to an issue).',
+  )
+  const open = String((await $.tool.call({ tool: TOOL, action: 'list' })).result)
+  expect(open).toBe('3 [gap] Open issue\n5 [gap] Gone\n6 [gap] Not GitHub')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /Resolved by \/ledger-sync: the pull request/ }))?.text).toMatch(/merged\.$/)
+  await ui.unmount()
+})
+
+test('sync says so when nothing links GitHub', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Local only' })
+
+  expect(String((await $.command.run(run('ledger-sync'))).text)).toBe('No ledger items link a GitHub issue or pull request.')
 })
