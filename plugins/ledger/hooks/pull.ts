@@ -1,49 +1,18 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { LedgerItem } from '../types'
-import { GITHUB, PANE, background, errorText, linkOf, topId, when } from './model'
+import { ISSUE, type Issue, ghApi, issueOf, numbersByLink } from './github'
+import { PANE, background, errorText, topId, when } from './model'
 import { readItems, updateItems } from './state'
 import { persist } from './storage'
 
-const ISSUE = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)/
 /** A pull stops adding issues past this many, so a huge tree cannot flood the ledger. */
 const MAX_PULLED = 200
-
-/** An issue as the pull needs it; `subs` is how many sub-issues GitHub says it has. */
-type Issue = { number: number; title: string; state: string; url: string; subs: number }
 
 /** A pulled issue and the issue it is a sub-issue of, by URL. */
 type Node = { issue: Issue; parentUrl?: string }
 
 type Fetched = { nodes: Node[]; failed: string[]; isCapped: boolean }
-
-function issueOf(raw: unknown): Issue {
-  const i = raw as {
-    number: number
-    title: string
-    state: string
-    html_url: string
-    sub_issues_summary?: { total?: number }
-  }
-
-  return {
-    number: i.number,
-    title: i.title,
-    state: String(i.state).toLowerCase(),
-    url: i.html_url,
-    subs: i.sub_issues_summary?.total ?? 0,
-  }
-}
-
-/** A GitHub REST call through gh; a failure throws its first line of stderr. */
-async function ghApi($: EngineInterface, path: string): Promise<unknown> {
-  const gh = await $.process.run(['gh', 'api', path], { timeoutMs: 15000 })
-  if (gh.exitCode !== 0) {
-    throw new Error(gh.stderr.trim().split('\n')[0] || 'gh exited ' + gh.exitCode)
-  }
-
-  return JSON.parse(gh.stdout)
-}
 
 /** Adds the sub-issues beneath `issue`, depth first, to `into`. */
 async function visit($: EngineInterface, issue: Issue, into: Fetched) {
@@ -79,17 +48,6 @@ async function fetchTree($: EngineInterface, repo: string, number: string): Prom
   await visit($, root, fetched)
 
   return fetched
-}
-
-/** Item numbers by the GitHub issue or pull request they link. */
-function numbersByLink(list: LedgerItem[]): Map<string, number> {
-  return new Map(
-    list.flatMap(i => {
-      const match = linkOf(i)?.match(GITHUB)
-
-      return match ? [[match[0], i.id] as const] : []
-    }),
-  )
 }
 
 /**
@@ -169,13 +127,16 @@ export async function pullLedger($: EngineInterface, text: string) {
     return { text: `Could not read ${args.url}: ${errorText(error)}` }
   }
   let added: LedgerItem[] = []
+  const root = fetched.nodes[0]?.issue as Issue
   await updateItems($, current => {
-    added = newItems(current, fetched.nodes, args.under)
+    // Without --under, the issue nests under its parent issue's item when that is logged.
+    const under = args.under ?? (root.parentUrl ? numbersByLink(current).get(root.parentUrl) : undefined)
+    added = newItems(current, fetched.nodes, under)
 
     return [...current, ...added]
   })
   await persist($)
   background($.ui.open({ id: PANE, title: 'Ledger' }))
 
-  return { text: report(fetched.nodes[0]?.issue as Issue, fetched.nodes, added, fetched) }
+  return { text: report(root, fetched.nodes, added, fetched) }
 }

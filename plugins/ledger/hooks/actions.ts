@@ -2,6 +2,7 @@ import type { EngineInterface } from 'claude-code'
 
 import type { LedgerItem, LedgerKind, LedgerStatus } from '../types'
 import { addMany, type NewItem, type ToolAnswer } from './batch'
+import { type Found, issueFound } from './github'
 import { describe, descendants, errorText, isOpen, topId, when } from './model'
 import { updateItems, updateItem } from './state'
 import { loadExport, mdPathOf, persist, writeExport } from './storage'
@@ -61,23 +62,40 @@ async function brief($: EngineInterface, input: Input): Promise<ToolAnswer> {
   return { result: `Briefing saved to ${input.path} and ${mdPathOf(input.path)}.` }
 }
 
+/** How a new item was placed, said back so the model knows what the ledger did on its own. */
+function placedText(id: number, parent: number | undefined, found: Found | undefined, input: Input): string {
+  const byGitHub = found?.parent !== undefined && !input.parent
+
+  return (
+    `Logged as ${id} (ledger)` +
+    when(parent, `, under ${parent}`) +
+    when(byGitHub, ' (the item of its parent issue on GitHub)') +
+    when(found && !input.url, `, linked to ${found?.url}`) +
+    '.'
+  )
+}
+
 async function add($: EngineInterface, { input, list, parent }: Call): Promise<ToolAnswer> {
   if (input.items) {
     return addMany($, list, input.items)
   }
-  const { kind, title, detail, where, url } = input
+  const { kind, title, detail, where } = input
   if (!kind || !title) {
     return { deny: 'add needs "kind" and "title".' }
   }
+  // An item tracking a GitHub issue gets its link and nests under its parent issue's item.
+  const found = input.url && parent ? undefined : await issueFound($, title, input.url, list)
+  const url = input.url ?? found?.url
+  const nest = parent?.id ?? found?.parent
   let id = 0
   await updateItems($, (current: LedgerItem[]) => {
     id = topId(current) + 1
 
-    return [...current, { id, kind, title, detail, where, url, parent: parent?.id, status: 'open' as const }]
+    return [...current, { id, kind, title, detail, where, url, parent: nest, status: 'open' as const }]
   })
   await persist($)
 
-  return { result: `Logged as ${id} (ledger)` + when(parent, `, under ${parent?.id}`) + '.' }
+  return { result: placedText(id, nest, found, input) }
 }
 
 /** The new value of a text field: left out keeps it, an empty string clears it. */

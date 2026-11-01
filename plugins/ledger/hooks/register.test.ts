@@ -603,12 +603,13 @@ test('sync says so when nothing links GitHub', async ($, on) => {
 })
 
 /** An issue as the GitHub REST API answers it. */
-const issue = (n: number, title: string, subs = 0, state = 'open') => ({
+const issue = (n: number, title: string, subs = 0, state = 'open', parent?: number) => ({
   number: n,
   title,
   state,
   html_url: `https://github.com/o/r/issues/${n}`,
   sub_issues_summary: { total: subs },
+  parent_issue_url: parent ? `https://api.github.com/repos/o/r/issues/${parent}` : null,
 })
 
 test('pull logs an issue and its sub-issues as a tree, closed ones resolved', async ($, on) => {
@@ -670,4 +671,43 @@ test('pull refuses what is not a GitHub issue, or an item that does not exist', 
   expect(String((await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/1'))).text)).toBe(
     'Could not read https://github.com/o/r/issues/1: gh: Not Found (HTTP 404)',
   )
+})
+
+test('an added GitHub issue gets its link and nests under its parent issue', async ($, on) => {
+  const { api } = engine(on)
+  api.set('repos/o/r/issues/10', issue(10, 'Initiative', 1))
+  api.set('repos/o/r/issues/10/sub_issues?per_page=100', [issue(11, 'Epic', 0, 'open', 10)])
+  api.set('repos/o/r/issues/15', issue(15, 'Found later', 0, 'open', 11))
+  api.set('repos/o/r/issues/16', issue(16, 'Linked', 0, 'open', 10))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/10'))
+
+  // "#15" is read in the one repository the ledger links.
+  const byTitle = await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: '#15 Found later' })
+  expect(byTitle.result).toBe(
+    'Logged as 3 (ledger), under 2 (the item of its parent issue on GitHub), linked to https://github.com/o/r/issues/15.',
+  )
+  const byUrl = await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Linked', url: 'https://github.com/o/r/issues/16' })
+  expect(byUrl.result).toBe('Logged as 4 (ledger), under 1 (the item of its parent issue on GitHub).')
+  // An issue GitHub does not confirm, and a parent given, are left as they are.
+  const unknown = await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: '#99 Unknown' })
+  expect(unknown.result).toBe('Logged as 5 (ledger).')
+  const given = await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: '#15 Again', parent: 1 })
+  expect(given.result).toBe('Logged as 6 (ledger), under 1, linked to https://github.com/o/r/issues/15.')
+
+  const open = String((await $.tool.call({ tool: TOOL, action: 'list' })).result)
+  expect(open).toContain('3 [gap] #15 Found later under 2')
+  expect(open).toContain('5 [gap] #99 Unknown\n')
+})
+
+test('pull nests an issue under its parent issue when that is logged', async ($, on) => {
+  const { api } = engine(on)
+  api.set('repos/o/r/issues/10', issue(10, 'Initiative'))
+  api.set('repos/o/r/issues/11', issue(11, 'Epic', 0, 'open', 10))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/10'))
+
+  await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/11'))
+  const open = String((await $.tool.call({ tool: TOOL, action: 'list' })).result)
+  expect(open).toBe('1 [gap] #10 Initiative\n2 [gap] #11 Epic under 1')
 })
