@@ -60,6 +60,11 @@ const COMMANDS = [
     description: 'Check the GitHub issues and pull requests ledger items link, and resolve the closed ones',
   },
   {
+    name: 'ledger-pull',
+    description: 'Log a GitHub issue and its sub-issues as a tree, skipping the ones already logged',
+    argumentHint: '<issue url> [--under <item>]',
+  },
+  {
     name: 'ledger-import',
     description: "Load an exported or another session's ledger into this session",
     argumentHint: '[file.json | list] [--replace | --merge]',

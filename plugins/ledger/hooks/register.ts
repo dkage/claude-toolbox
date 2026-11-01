@@ -6,6 +6,7 @@ import { exportLedger } from './exporting'
 import { importLedger, offer } from './importing'
 import { PANE, TOOL, background } from './model'
 import { drawPane } from './pane'
+import { pullLedger } from './pull'
 import { referencedIds, rulesWith, spelledOut } from './prompt'
 import { registerAll } from './setup'
 import { readItems, toggleHideDone } from './state'
@@ -49,6 +50,8 @@ export const register: Register = on => {
   on('command.run', { command: 'ledger-import' }, ($, e) => importLedger($, e.args))
 
   on('command.run', { command: 'ledger-sync' }, $ => syncLedger($))
+
+  on('command.run', { command: 'ledger-pull' }, ($, e) => pullLedger($, e.args))
 
   on('tool.call', { tool: TOOL }, async ($, e) => act($, e as unknown as Input, await readItems($)))
 

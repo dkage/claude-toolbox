@@ -36,12 +36,23 @@ function engine(on: On, session = 'S1') {
   on('session.root', () => ({ value: '/work/demo' }) as never)
   on('session.cwd', () => ({ value: '/work/demo' }) as never)
   on('env.get', () => ({ value: '/home/me' }) as never)
-  // git answers the branch; gh answers each URL from \`gh\`, or fails for an unknown one.
+  // git answers the branch; gh answers each URL from \`gh\`, and \`gh api\` each path from
+  // \`api\`, or fails for an unknown one.
   const gh = new Map<string, string>()
+  const api = new Map<string, unknown>()
   on('process.run', (_$, e) => {
     const argv = (e as { argv: string[] }).argv
     if (argv[0] !== 'gh') {
       return { value: { exitCode: 0, stdout: 'feat/x\n', stderr: '' } } as never
+    }
+    if (argv[1] === 'api') {
+      const body = api.get(argv[2] as string)
+
+      return {
+        value: body
+          ? { exitCode: 0, stdout: JSON.stringify(body), stderr: '' }
+          : { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' },
+      } as never
     }
     const state = gh.get(argv[3] as string)
 
@@ -94,7 +105,7 @@ function engine(on: On, session = 'S1') {
     return { drop: 'captured by the test' } as never
   })
 
-  return { files, store, prompts, gh, clock }
+  return { files, store, prompts, gh, api, clock }
 }
 
 const run = (command: string, args = '') =>
@@ -589,4 +600,74 @@ test('sync says so when nothing links GitHub', async ($, on) => {
   await $.tool.call({ tool: TOOL, action: 'add', kind: 'gap', title: 'Local only' })
 
   expect(String((await $.command.run(run('ledger-sync'))).text)).toBe('No ledger items link a GitHub issue or pull request.')
+})
+
+/** An issue as the GitHub REST API answers it. */
+const issue = (n: number, title: string, subs = 0, state = 'open') => ({
+  number: n,
+  title,
+  state,
+  html_url: `https://github.com/o/r/issues/${n}`,
+  sub_issues_summary: { total: subs },
+})
+
+test('pull logs an issue and its sub-issues as a tree, closed ones resolved', async ($, on) => {
+  const { api } = engine(on)
+  api.set('repos/o/r/issues/10', issue(10, 'Initiative', 2))
+  api.set('repos/o/r/issues/10/sub_issues?per_page=100', [issue(11, 'Epic', 1), issue(12, 'Done', 0, 'closed')])
+  api.set('repos/o/r/issues/11/sub_issues?per_page=100', [issue(13, 'Task')])
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'add', kind: 'decision', title: 'Roadmap' })
+
+  const out = await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/10 --under 1'))
+  expect(String(out.text)).toBe('Pulled 4 of 4 issues from #10 Initiative.')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const rows = []
+  for (const [n, title] of [[10, 'Initiative'], [11, 'Epic'], [13, 'Task'], [12, 'Done']] as const) {
+    // The number is a link, whose found text leads with its href.
+    const text = (await ui.find({ type: 'Text', text: new RegExp(`#${n} ${title}`) }))?.text
+    rows.push(text?.replace(`https://github.com/o/r/issues/${n}`, ''))
+  }
+  // Depth first: Task, under Epic, is numbered before Done. A parent's guide sits beside its fold arrow.
+  expect(rows).toEqual([
+    ' ☐ 2. #10 Initiative (1/2) [gap]',
+    ' ☐ 3. #11 Epic (0/1) [gap]',
+    '   │  └─ ☐ 4. #13 Task [gap]',
+    '   └─ ✓ 5. #12 Done [gap] → Closed on GitHub.',
+  ])
+  await ui.unmount()
+})
+
+test('pull again adds only new sub-issues, under the items already logged', async ($, on) => {
+  const { api } = engine(on)
+  api.set('repos/o/r/issues/10', issue(10, 'Initiative', 1))
+  api.set('repos/o/r/issues/10/sub_issues?per_page=100', [issue(11, 'Epic', 1)])
+  api.set('repos/o/r/issues/11/sub_issues?per_page=100', [issue(13, 'Task')])
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/10'))
+  api.set('repos/o/r/issues/11', issue(11, 'Epic', 2))
+  api.set('repos/o/r/issues/11/sub_issues?per_page=100', [issue(13, 'Task'), issue(14, 'New task', 1)])
+
+  const out = await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/11'))
+  expect(String(out.text)).toBe(
+    'Pulled 1 of 3 issues from #11 Epic; 2 were already in the ledger (/ledger-sync refreshes their state).\n' +
+      'Could not read the sub-issues of: #14 (gh: Not Found (HTTP 404)).',
+  )
+  const open = String((await $.tool.call({ tool: TOOL, action: 'list' })).result)
+  expect(open).toBe('1 [gap] #10 Initiative\n2 [gap] #11 Epic under 1\n3 [gap] #13 Task under 2\n4 [gap] #14 New task under 2')
+})
+
+test('pull refuses what is not a GitHub issue, or an item that does not exist', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+
+  const usage = String((await $.command.run(run('ledger-pull', 'https://github.com/o/r/pull/3'))).text)
+  expect(usage).toMatch(/^Give a GitHub issue: \/ledger-pull/)
+  expect(String((await $.command.run(run('ledger-pull', ''))).text)).toBe(usage)
+  expect(String((await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/1 --under 9'))).text)).toBe(
+    'No ledger item 9 to nest under.',
+  )
+  expect(String((await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/1'))).text)).toBe(
+    'Could not read https://github.com/o/r/issues/1: gh: Not Found (HTTP 404)',
+  )
 })
