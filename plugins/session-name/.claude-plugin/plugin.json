@@ -1,0 +1,6 @@
+{
+  "name": "session-name",
+  "version": "0.1.0",
+  "description": "Shows the active session's name in the status line, kept current as it is generated or renamed.",
+  "author": { "name": "Danilo Cunha" }
+}

@@ -14,6 +14,11 @@
       "name": "ledger",
       "description": "A numbered side-panel ledger of decisions, bugs, gaps and smells found during a session, nested as a tree with progress, notes and folding, and auto-saved; refer to items as \"13 (ledger)\", export them with a briefing, import or merge them in another session, and pull or sync GitHub issues.",
       "source": "./plugins/ledger"
+    },
+    {
+      "name": "session-name",
+      "description": "Shows the active session's name in the status line, kept current as it is generated or renamed.",
+      "source": "./plugins/session-name"
     }
   ]
 }
