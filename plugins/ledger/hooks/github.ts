@@ -52,45 +52,45 @@ export function numbersByLink(list: LedgerItem[]): Map<string, number> {
   )
 }
 
-/** The repository the ledger's issue links point to, when they all point to one. */
-function repoOf(list: LedgerItem[]): string | undefined {
-  const repos = new Set(list.flatMap(i => i.url?.match(ISSUE)?.[1] ?? []))
+/** The repository the given issue links point to, when they all point to one. */
+function repoOf(linked: { url?: string }[]): string | undefined {
+  const repos = new Set(linked.flatMap(i => i.url?.match(ISSUE)?.[1] ?? []))
 
   return repos.size === 1 ? [...repos][0] : undefined
 }
 
-/** The issue a new item names: its URL, or "#N" in its title read in the ledger's one repository. */
-function namedIssue(title: string, url: string | undefined, list: LedgerItem[]): RegExpMatchArray | undefined {
+/** The issue a new item names: its URL, or "#N" in its title read in the one repository linked. */
+function namedIssue(title: string, url: string | undefined, linked: { url?: string }[]): RegExpMatchArray | undefined {
   if (url) {
     return url.match(ISSUE) ?? undefined
   }
   const number = title.match(/#(\d+)\b/)?.[1]
-  const repo = repoOf(list)
+  const repo = repoOf(linked)
 
   return number && repo ? `https://github.com/${repo}/issues/${number}`.match(ISSUE) ?? undefined : undefined
 }
 
-/** What GitHub says about a new item's issue: its page, and the item of its parent issue. */
-export type Found = { url: string; parent?: number }
+/** What GitHub says about a new item's issue: its page, and the page of the issue it is a sub-issue of. */
+export type Found = { url: string; parentUrl?: string }
 
 /**
- * The GitHub issue a new item tracks, by its URL or by "#N" in its title, with the
- * ledger item of the issue it is a sub-issue of; nothing unless GitHub confirms it.
+ * The GitHub issue a new item tracks, by its URL or by "#N" in its title read in the
+ * one repository `linked` points to; nothing unless GitHub confirms it.
  */
 export async function issueFound(
   $: EngineInterface,
   title: string,
   url: string | undefined,
-  list: LedgerItem[],
+  linked: { url?: string }[],
 ): Promise<Found | undefined> {
-  const match = namedIssue(title, url, list)
+  const match = namedIssue(title, url, linked)
   if (!match) {
     return undefined
   }
   try {
     const issue = issueOf(await ghApi($, `repos/${match[1]}/issues/${match[2]}`))
 
-    return { url: issue.url, parent: issue.parentUrl ? numbersByLink(list).get(issue.parentUrl) : undefined }
+    return { url: issue.url, parentUrl: issue.parentUrl }
   } catch {
     return undefined
   }

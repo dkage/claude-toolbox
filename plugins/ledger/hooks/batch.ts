@@ -1,7 +1,8 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { LedgerItem } from '../types'
-import { kindOf, topId, when } from './model'
+import { type Found, issueFound, numbersByLink } from './github'
+import { GITHUB, kindOf, topId, when } from './model'
 import { updateItems } from './state'
 import { persist } from './storage'
 
@@ -22,12 +23,16 @@ export type ToolAnswer = { result: string } | { deny: string }
 /** A batch checked and numbered after `base`, or the reason it was refused. */
 type Plan = { made: LedgerItem[] } | { deny: string }
 
-/** The parent an entry nests under: an earlier entry's number by "ref", or an existing item. */
+/**
+ * The parent an entry nests under: an earlier entry's number by "ref", an existing item,
+ * or else `byIssue`, the item of its parent issue on GitHub.
+ */
 function parentOfEntry(
   entry: NewItem,
   n: number,
   refs: Map<string, number>,
   list: LedgerItem[],
+  byIssue?: number,
 ): { parent?: number } | { deny: string } {
   if (entry.under !== undefined) {
     const parent = refs.get(entry.under)
@@ -35,7 +40,7 @@ function parentOfEntry(
     return parent === undefined ? { deny: `items[${n}].under "${entry.under}" names no earlier entry.` } : { parent }
   }
   if (!entry.parent) {
-    return { parent: undefined }
+    return { parent: byIssue }
   }
 
   return list.some(i => i.id === entry.parent)
@@ -43,15 +48,40 @@ function parentOfEntry(
     : { deny: `items[${n}].parent: no ledger item ${entry.parent}.` }
 }
 
-function plan(list: LedgerItem[], batch: NewItem[], base: number): Plan {
+/** The GitHub issue each entry names, when it could still gain a link or a parent from it. */
+async function foundFor($: EngineInterface, list: LedgerItem[], batch: NewItem[]): Promise<(Found | undefined)[]> {
+  const linked = [...list, ...batch]
+  const found: (Found | undefined)[] = []
+  for (const entry of batch) {
+    const isPlaced = entry.url && (entry.under !== undefined || entry.parent)
+    found.push(isPlaced ? undefined : await issueFound($, entry.title ?? '', entry.url, linked))
+  }
+
+  return found
+}
+
+/** Records the issue page `url` links as item `id`, so later entries can nest under it. */
+function linked(url: string | undefined, id: number, links: Map<string, number>): string | undefined {
+  const link = url?.match(GITHUB)?.[0]
+  if (link) {
+    links.set(link, id)
+  }
+
+  return url
+}
+
+function plan(list: LedgerItem[], batch: NewItem[], base: number, found: (Found | undefined)[]): Plan {
   const refs = new Map<string, number>()
+  // Issue pages to item numbers, the batch's own entries added as they are numbered.
+  const links = numbersByLink(list)
   const made: LedgerItem[] = []
   for (const [n, entry] of batch.entries()) {
     const kind = kindOf(entry.kind)
     if (!kind || !entry.title) {
       return { deny: `items[${n}] needs "kind" and "title".` }
     }
-    const nesting = parentOfEntry(entry, n, refs, list)
+    const parentUrl = found[n]?.parentUrl
+    const nesting = parentOfEntry(entry, n, refs, list, parentUrl ? links.get(parentUrl) : undefined)
     if ('deny' in nesting) {
       return nesting
     }
@@ -62,11 +92,23 @@ function plan(list: LedgerItem[], batch: NewItem[], base: number): Plan {
     if (entry.ref !== undefined) {
       refs.set(entry.ref, id)
     }
-    const { detail, where, url, title } = entry
+    const { detail, where, title } = entry
+    const url = linked(entry.url ?? found[n]?.url, id, links)
     made.push({ id, kind, title, detail, where, url, parent: nesting.parent, status: 'open' })
   }
 
   return { made }
+}
+
+/** Where a logged entry went, and what GitHub gave it that the entry did not say. */
+function placedBy(item: LedgerItem, entry: NewItem | undefined, moved: (id?: number) => number | undefined): string {
+  const byGitHub = item.parent !== undefined && entry?.under === undefined && !entry?.parent
+
+  return (
+    when(item.parent, `, under ${moved(item.parent)}`) +
+    when(byGitHub, ' (its parent issue)') +
+    when(item.url && !entry?.url, `, linked to ${item.url}`)
+  )
 }
 
 /** Logs a batch in order, all or nothing; "under" refers to an earlier entry's "ref". */
@@ -75,7 +117,8 @@ export async function addMany($: EngineInterface, list: LedgerItem[], batch: New
     return { deny: 'add with "items" needs at least one entry.' }
   }
   const base = topId(list)
-  const planned = plan(list, batch, base)
+  const found = await foundFor($, list, batch)
+  const planned = plan(list, batch, base, found)
   if ('deny' in planned) {
     return planned
   }
@@ -88,7 +131,7 @@ export async function addMany($: EngineInterface, list: LedgerItem[], batch: New
     return [...current, ...planned.made.map(i => ({ ...i, id: i.id + shift, parent: moved(i.parent) }))]
   })
   await persist($)
-  const lines = planned.made.map(i => `${i.id + shift} (ledger) ${i.title}` + when(i.parent, `, under ${moved(i.parent)}`))
+  const lines = planned.made.map((i, n) => `${i.id + shift} (ledger) ${i.title}` + placedBy(i, batch[n], moved))
 
   return { result: `Logged ${planned.made.length} items:\n${lines.join('\n')}` }
 }

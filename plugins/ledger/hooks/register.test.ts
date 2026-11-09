@@ -711,3 +711,29 @@ test('pull nests an issue under its parent issue when that is logged', async ($,
   const open = String((await $.tool.call({ tool: TOOL, action: 'list' })).result)
   expect(open).toBe('1 [gap] #10 Initiative\n2 [gap] #11 Epic under 1')
 })
+
+test('a batch links its GitHub issues and nests them under their parent issues', async ($, on) => {
+  const { api } = engine(on)
+  api.set('repos/o/r/issues/10', issue(10, 'Initiative'))
+  api.set('repos/o/r/issues/20', issue(20, 'Epic', 0, 'open', 10))
+  api.set('repos/o/r/issues/21', issue(21, 'Task', 0, 'open', 20))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.command.run(run('ledger-pull', 'https://github.com/o/r/issues/10'))
+
+  // #21's parent issue is #20, an earlier entry of the same batch; the decision names none.
+  const out = await $.tool.call({
+    tool: TOOL,
+    action: 'add',
+    items: [
+      { kind: 'gap', title: '#20 Epic' },
+      { kind: 'gap', title: '#21 Task' },
+      { kind: 'decision', title: 'Pick a name' },
+    ],
+  })
+  expect(out.result).toBe(
+    'Logged 3 items:\n' +
+      '2 (ledger) #20 Epic, under 1 (its parent issue), linked to https://github.com/o/r/issues/20\n' +
+      '3 (ledger) #21 Task, under 2 (its parent issue), linked to https://github.com/o/r/issues/21\n' +
+      '4 (ledger) Pick a name',
+  )
+})

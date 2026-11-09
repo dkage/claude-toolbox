@@ -2,7 +2,7 @@ import type { EngineInterface } from 'claude-code'
 
 import type { LedgerItem, LedgerKind, LedgerStatus } from '../types'
 import { addMany, type NewItem, type ToolAnswer } from './batch'
-import { type Found, issueFound } from './github'
+import { type Found, issueFound, numbersByLink } from './github'
 import { describe, descendants, errorText, isOpen, topId, when } from './model'
 import { updateItems, updateItem } from './state'
 import { loadExport, mdPathOf, persist, writeExport } from './storage'
@@ -64,7 +64,7 @@ async function brief($: EngineInterface, input: Input): Promise<ToolAnswer> {
 
 /** How a new item was placed, said back so the model knows what the ledger did on its own. */
 function placedText(id: number, parent: number | undefined, found: Found | undefined, input: Input): string {
-  const byGitHub = found?.parent !== undefined && !input.parent
+  const byGitHub = parent !== undefined && !input.parent
 
   return (
     `Logged as ${id} (ledger)` +
@@ -86,7 +86,7 @@ async function add($: EngineInterface, { input, list, parent }: Call): Promise<T
   // An item tracking a GitHub issue gets its link and nests under its parent issue's item.
   const found = input.url && parent ? undefined : await issueFound($, title, input.url, list)
   const url = input.url ?? found?.url
-  const nest = parent?.id ?? found?.parent
+  const nest = parent?.id ?? (found?.parentUrl ? numbersByLink(list).get(found.parentUrl) : undefined)
   let id = 0
   await updateItems($, (current: LedgerItem[]) => {
     id = topId(current) + 1
